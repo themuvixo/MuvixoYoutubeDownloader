@@ -147,10 +147,6 @@ jobs:
           echo "  • Delivery        : GitHub Actions Artifact 📦"
           echo ""
 
-          sanitize_name() {
-            echo "$1" | sed 's/ /-/g' | sed 's/　/-/g' | tr -s '-'
-          }
-
           # ============================================================
           # OPTIMIZED FORMAT STRINGS – support for 4K and high quality
           # Video is always merged/remuxed to mp4 (except audio-only mode).
@@ -185,8 +181,42 @@ jobs:
           echo "$FORMAT" > /tmp/yt_format.txt
           echo "$QUALITY" > /tmp/yt_quality.txt
           echo "$ZIP_PASSWORD" > /tmp/yt_password.txt
-          # Save URL list (newline separated)
-          printf "%s\n" "${URL_LIST[@]}" > /tmp/yt_urls.txt
+
+          # ── Resolve Spotify URLs → YouTube search queries ─────────────────
+          # If the user pasted one or more Spotify track links, we turn each
+          # into a `ytsearch1:<title> <artist>` query so yt-dlp downloads the
+          # top matching YouTube result, and force MP3 (audio) mode.
+          RESOLVED_URLS=()
+          HAS_SPOTIFY=false
+          for url in "${URL_LIST[@]}"; do
+            if [[ "$url" =~ open\.spotify\.com|^spotify:|spotify\.com ]]; then
+              HAS_SPOTIFY=true
+              echo "🎧 Spotify URL detected: $url"
+              SPOTIFY_JSON=$(curl -s "https://open.spotify.com/oembed?url=${url}" || echo "")
+              SPOTIFY_TITLE=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
+              SPOTIFY_AUTHOR=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('author_name',''))" 2>/dev/null || echo "")
+              if [ -n "$SPOTIFY_TITLE" ]; then
+                echo "🎧 Resolved: $SPOTIFY_TITLE — $SPOTIFY_AUTHOR"
+                RESOLVED_URLS+=("ytsearch1:${SPOTIFY_TITLE} ${SPOTIFY_AUTHOR}")
+              else
+                echo "⚠️  Could not resolve Spotify title, using raw URL."
+                RESOLVED_URLS+=("$url")
+              fi
+            else
+              RESOLVED_URLS+=("$url")
+            fi
+          done
+          # Spotify links are always audio → MP3
+          if [ "$HAS_SPOTIFY" = true ]; then
+            QUALITY="audio"
+            FORMAT="bestaudio/bestaudio*"
+            echo "$FORMAT" > /tmp/yt_format.txt
+            echo "$QUALITY" > /tmp/yt_quality.txt
+            echo "🎧 Spotify mode active — quality forced to audio (MP3)."
+          fi
+
+          # Save resolved URL list (newline separated)
+          printf "%s\n" "${RESOLVED_URLS[@]}" > /tmp/yt_urls.txt
 
       - name: Download YouTube Video(s)
         run: |
@@ -225,7 +255,7 @@ jobs:
             if [ "$QUALITY" = "audio" ]; then
               COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             else
-              # Always remux/merge to mp4 — single file, no fragmentation, no splitting needed
+              # Always remux/merge to mp4 — single file
               COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --format-sort res,+codec:vp9.1,+size --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
             case $METHOD in
@@ -378,7 +408,7 @@ jobs:
             echo "  Files:"
             ls -la "$TMP_DIR/"
 
-            # ── Process each downloaded file — always kept as a single mp4/mp3, no splitting ──
+            # ── Process each downloaded file — kept as a single file, no splitting ──
             for FILE in "$TMP_DIR"/*; do
               [ -f "$FILE" ] || continue
               if [[ "$FILE" == *.jpg ]] || [[ "$FILE" == *.webp ]]; then
@@ -424,51 +454,30 @@ jobs:
                 echo "  ✅ saved."
               fi
 
-              # ── Generate a clean per-video README, bundled inside the artifact ──
+              # ── Generate a clean per-video README ──
               README_FILE="$OUTPUT_DIR/${FINAL_FOLDER_NAME}/README.md"
               {
-                printf '%s\n' "# 🎬 ${FILENAME_NO_EXT}"
-                printf '%s\n' ""
-                if [ "$HAS_THUMB" = true ]; then
-                  printf '%s\n' "<div align=\"center\">"
-                  printf '%s\n' "  <img src=\"thumbnail.jpg\" alt=\"Thumbnail\" width=\"360\" style=\"border-radius:12px;border:1px solid #333;\">"
-                  printf '%s\n' "</div>"
-                  printf '%s\n' ""
-                fi
-                printf '%s\n' "<p align=\"center\"><sub>✨ Created by <b>Muvixo</b></sub></p>"
-                printf '%s\n' ""
-                printf '%s\n' "---"
-                printf '%s\n' ""
-                printf '%s\n' "### 📋 Video Info"
-                printf '%s\n' ""
-                printf '%s\n' "| Property | Value |"
-                printf '%s\n' "|---|---|"
-                printf '%s\n' "| **Title** | \`${FILENAME_NO_EXT}\` |"
-                printf '%s\n' "| **Source** | [YouTube Link](${URL}) |"
-                printf '%s\n' "| **Quality** | ${QUALITY} |"
-                printf '%s\n' "| **Size** | ${SIZE_MB} MB |"
+                echo "# 🎬 ${FILENAME_NO_EXT}"
+                echo ""
+                echo "---"
+                echo ""
+                echo "### 📋 Video Info"
+                echo ""
+                echo "| Property | Value |"
+                echo "|---|---|"
+                echo "| **Title** | \`${FILENAME_NO_EXT}\` |"
+                echo "| **Quality** | ${QUALITY} |"
+                echo "| **Size** | ${SIZE_MB} MB |"
                 if [ -n "$ZIP_PASSWORD" ]; then
-                  printf '%s\n' "| **Format** | \`${FINAL_FOLDER_NAME}.zip\` (password-protected) |"
+                  echo "| **Format** | \`${FINAL_FOLDER_NAME}.zip\` (password-protected) |"
                 else
-                  printf '%s\n' "| **Format** | \`${FINAL_FOLDER_NAME}.${EXT}\` (single file, ready to play) |"
+                  echo "| **Format** | \`${FINAL_FOLDER_NAME}.${EXT}\` (single file, ready to play) |"
                 fi
-                printf '%s\n' "| **Status** | ✅ Complete |"
-                printf '%s\n' ""
-                printf '%s\n' "---"
-                printf '%s\n' ""
-                if [ -n "$ZIP_PASSWORD" ]; then
-                  printf '%s\n' "### 🔓 How to Open"
-                  printf '%s\n' ""
-                  printf '%s\n' "This file is password-protected. Extract \`${FINAL_FOLDER_NAME}.zip\` with 7-Zip / WinRAR / Keka / Archive Utility and enter the password you set when starting the workflow."
-                else
-                  printf '%s\n' "### ▶️ How to Play"
-                  printf '%s\n' ""
-                  printf '%s\n' "\`${FINAL_FOLDER_NAME}.${EXT}\` is ready to play — no extraction needed."
-                fi
-                printf '%s\n' ""
-                printf '%s\n' "---"
-                printf '%s\n' ""
-                printf '%s\n' "<p align=\"center\"><sub>✨ Created by <b>Muvixo</b></sub></p>"
+                echo "| **Status** | ✅ Complete |"
+                echo ""
+                echo "---"
+                echo ""
+                echo "<p align=\"center\"><sub>✨ Created by <b>Muvixo</b></sub></p>"
               } > "$README_FILE"
               echo "  📝 README.md generated"
             done
@@ -487,13 +496,6 @@ jobs:
       - name: Download Subtitles
         if: ${{ github.event.inputs.download_subtitles == 'true' }}
         run: |
-          # ──────────────────────────────────────────────────────────────────────
-          # SUBTITLE DOWNLOADER
-          # • Downloads original subtitles (all languages) if they exist
-          # • Downloads Persian (fa) subtitles — or auto-generated if missing
-          # • Saves everything to: <output>/<video_folder>/subtitle/ → zipped
-          # • IMPORTANT: Errors in subtitle download will NOT stop the workflow
-          # ──────────────────────────────────────────────────────────────────────
           set +e
           OUTPUT_DIR=$(cat /tmp/output_dir_path.txt)
           mapfile -t URL_LIST < /tmp/yt_urls.txt
@@ -537,7 +539,7 @@ jobs:
                     --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                     --add-header "Accept-Language:en-US,en;q=0.9" \
                     $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
+                    ;;
                 2)
                   yt-dlp \
                     --proxy "socks5://127.0.0.1:1080" \
@@ -611,10 +613,7 @@ jobs:
             return 1
           }
 
-          URL_INDEX=0
           while IFS='|' read -r ORIGINAL_NAME FOLDER_NAME VIDEO_URL VIDEO_SIZE HAS_THUMB; do
-            URL_INDEX=$((URL_INDEX + 1))
-            URL="${VIDEO_URL:-${URL_LIST[$((URL_INDEX - 1))]}}"
             [ -z "$FOLDER_NAME" ] && continue
 
             SUBTITLE_DIR="$OUTPUT_DIR/${FOLDER_NAME}/subtitle"
@@ -627,7 +626,7 @@ jobs:
             echo "  ──────────────────────────────────────────"
 
             echo "  → fetching original subtitles (en, fa, and others)..."
-            sub_download "all" "$OUT_TMPL" "$URL" || true
+            sub_download "all" "$OUT_TMPL" "$VIDEO_URL" || true
 
             EN_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l)
             FA_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l)
@@ -637,25 +636,9 @@ jobs:
 
             if [ "$EN_COUNT" -eq 0 ] || [ "$FA_COUNT" -eq 0 ]; then
               echo "  → downloading auto-generated subtitles (en, fa)..."
-              sub_download "auto-both" "$OUT_TMPL" "$URL" || true
+              sub_download "auto-both" "$OUT_TMPL" "$VIDEO_URL" || true
               EN_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l)
               FA_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l)
-
-              [ "$EN_COUNT" -gt 0 ] && echo "  ✅ auto-generated English subtitle downloaded." || echo "  ⚠️  English auto-generated subtitle unavailable."
-              [ "$FA_COUNT" -gt 0 ] && echo "  ✅ auto-generated Persian subtitle downloaded." || echo "  ⚠️  Persian auto-generated subtitle unavailable."
-
-              if [ "$EN_COUNT" -eq 0 ]; then
-                echo "  → retrying English auto-generated subtitle separately..."
-                sub_download "en-auto" "$OUT_TMPL" "$URL" || true
-                EN_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l)
-                [ "$EN_COUNT" -gt 0 ] && echo "  ✅ English subtitle downloaded on retry." || echo "  ⚠️  English subtitle still unavailable."
-              fi
-              if [ "$FA_COUNT" -eq 0 ]; then
-                echo "  → retrying Persian auto-generated subtitle separately..."
-                sub_download "fa-auto" "$OUT_TMPL" "$URL" || true
-                FA_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l)
-                [ "$FA_COUNT" -gt 0 ] && echo "  ✅ Persian subtitle downloaded on retry." || echo "  ⚠️  Persian subtitle still unavailable."
-              fi
             fi
 
             SUB_COUNT=$(find "$SUBTITLE_DIR" -type f 2>/dev/null | wc -l)
@@ -667,36 +650,7 @@ jobs:
               ZIP_PATH="$OUTPUT_DIR/${FOLDER_NAME}/subtitle.zip"
               if (cd "$SUBTITLE_DIR" && zip -j "$ZIP_PATH" ./* 2>&1); then
                 rm -rf "$SUBTITLE_DIR"
-                if [ -f "$ZIP_PATH" ]; then
-                  echo "  ✅ subtitle.zip created"
-
-                  # ── Patch the per-video README with a subtitles section ──
-                  README_FILE="$OUTPUT_DIR/${FOLDER_NAME}/README.md"
-                  if [ -f "$README_FILE" ]; then
-                    SUB_SECTION_FILE=$(mktemp)
-                    {
-                      printf '%s\n' ""
-                      printf '%s\n' "### 🔤 Subtitles"
-                      printf '%s\n' ""
-                      printf '%s\n' "\`subtitle.zip\` is included in this folder — extract it for \`.vtt\` subtitle files (English / Persian)."
-                      printf '%s\n' ""
-                    } > "$SUB_SECTION_FILE"
-                    LAST_SEP=$(grep -n "^---$" "$README_FILE" | tail -1 | cut -d: -f1)
-                    if [ -n "$LAST_SEP" ] && [ "$LAST_SEP" -gt 0 ] 2>/dev/null; then
-                      INSERT_AT=$((LAST_SEP - 1))
-                      head -n "$INSERT_AT" "$README_FILE" > "${README_FILE}.tmp"
-                      cat "$SUB_SECTION_FILE" >> "${README_FILE}.tmp"
-                      tail -n "+$((INSERT_AT + 1))" "$README_FILE" >> "${README_FILE}.tmp"
-                      mv "${README_FILE}.tmp" "$README_FILE"
-                    else
-                      cat "$SUB_SECTION_FILE" >> "$README_FILE"
-                    fi
-                    rm -f "$SUB_SECTION_FILE"
-                    echo "  📝 README.md updated with subtitle info"
-                  fi
-                else
-                  echo "  ⚠️  failed to create subtitle.zip"
-                fi
+                echo "  ✅ subtitle.zip created"
               else
                 echo "  ⚠️  zip command failed — continuing without subtitles"
                 rm -rf "$SUBTITLE_DIR" 2>/dev/null || true
@@ -706,7 +660,6 @@ jobs:
 
           echo ""
           echo "✅ Subtitle phase complete (failures handled gracefully)."
-          set -e
           exit 0
 
       - name: Stop WARP Container
@@ -744,7 +697,7 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║                    ✅  A L L   D O N E                      "
+          echo "║                    ✅  A L L   D O N E                     ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
           echo "  Download link: ${RUN_URL}"

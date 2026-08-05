@@ -182,26 +182,116 @@ jobs:
           echo "$QUALITY" > /tmp/yt_quality.txt
           echo "$ZIP_PASSWORD" > /tmp/yt_password.txt
 
-          # ── Resolve Spotify URLs → YouTube search queries ─────────────────
-          # If the user pasted one or more Spotify track links, we turn each
-          # into a `ytsearch1:<title> <artist>` query so yt-dlp downloads the
-          # top matching YouTube result, and force MP3 (audio) mode.
+          # ── Resolve Spotify URLs → verified YouTube video ────────────────
+          # We do NOT trust a blind `ytsearch1:<title> <artist>` — it returns
+          # Google's top-ranked hit with zero author verification, so a query
+          # like "Ey Khoda" can match a song by a different artist whose name
+          # merely contains those words. Instead we pull up to 10 search
+          # results and pick the one whose channel actually matches the
+          # Spotify artist (Persian-safe), then download that exact video.
           RESOLVED_URLS=()
           HAS_SPOTIFY=false
+
+          resolve_spotify() {
+            local URL="$1"
+            echo "🎧 Spotify URL detected: $URL"
+            local SPOTIFY_JSON SPOTIFY_TITLE SPOTIFY_AUTHOR
+            SPOTIFY_JSON=$(curl -s "https://open.spotify.com/oembed?url=${URL}" || echo "")
+            SPOTIFY_TITLE=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
+            SPOTIFY_AUTHOR=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('author_name',''))" 2>/dev/null || echo "")
+            if [ -z "$SPOTIFY_TITLE" ]; then
+              echo "⚠️  Could not resolve Spotify title, using raw URL."
+              RESOLVED_URLS+=("$URL")
+              return
+            fi
+            echo "🎧 Target: $SPOTIFY_TITLE — $SPOTIFY_AUTHOR"
+
+            # Gather up to 10 candidate search results (id, title, channel).
+            yt-dlp \
+              --proxy "socks5://127.0.0.1:1080" \
+              --extractor-args "youtube:player_client=web" \
+              --js-runtimes deno \
+              --remote-components ejs:github \
+              --skip-download --no-warnings --no-check-certificates \
+              --print "%(id)s|||%(title)s|||%(channel)s" \
+              "ytsearch10:${SPOTIFY_TITLE} ${SPOTIFY_AUTHOR}" \
+              2>/dev/null > /tmp/spotify_candidates.txt || true
+
+            export SPOTIFY_TITLE SPOTIFY_AUTHOR
+            CHOSEN_VIDEO=$(python3 <<'PY' 2>/dev/null || true
+          import os, re
+
+          def norm(s):
+              s = (s or '').lower()
+              # keep latin letters/digits + Arabic/Persian block (for Persian text)
+              s = re.sub(r'[^\w؀-ۿݐ-ݿﹰ-﻿ ]', ' ', s)
+              return re.sub(r'\s+', ' ', s).strip()
+
+          author = norm(os.environ.get('SPOTIFY_AUTHOR', ''))
+          au = {w for w in author.split() if w}
+
+          cands = []
+          try:
+              with open('/tmp/spotify_candidates.txt', encoding='utf-8', errors='replace') as f:
+                  for ln in f:
+                      ln = ln.rstrip('\n').strip()
+                      if not ln:
+                          continue
+                      parts = ln.split('|||')
+                      vid = parts[0].strip()
+                      t   = norm(parts[1]) if len(parts) > 1 else ''
+                      ch  = norm(parts[2]) if len(parts) > 2 else ''
+                      if vid:
+                          cands.append((vid, t, ch))
+          except OSError:
+              pass
+
+          def close(a, b):
+              if not a or not b:
+                  return False
+              return a == b or a in b or b in a
+
+          # tier 1: channel name matches the artist (exact or substring each way)
+          for vid, t, ch in cands:
+              if close(ch, author):
+                  print(f"https://www.youtube.com/watch?v={vid}")
+                  raise SystemExit(0)
+
+          # tier 2: channel contains every artist token, e.g. "Afshin Moghaddam" in
+          # "Afshin Moghaddam Official" / "افشین مقدم"
+          for vid, t, ch in cands:
+              cw = ch.lower()
+              if au and all(w in cw for w in au):
+                  print(f"https://www.youtube.com/watch?v={vid}")
+                  raise SystemExit(0)
+
+          # tier 3: title matches the artist exactly (usually the artist's own upload)
+          for vid, t, ch in cands:
+              if close(t, author):
+                  print(f"https://www.youtube.com/watch?v={vid}")
+                  raise SystemExit(0)
+
+          # fallback: no verified match — keep first candidate
+          for vid, t, ch in cands:
+              print(f"https://www.youtube.com/watch?v={vid}")
+              raise SystemExit(0)
+          # last resort: no candidates at all
+          print(f"ytsearch1:{__import__('os').environ.get('SPOTIFY_TITLE','')} {__import__('os').environ.get('SPOTIFY_AUTHOR','')}")
+          PY
+            )
+            if [ -n "$CHOSEN_VIDEO" ]; then
+              echo "🔎 Verified match: $CHOSEN_VIDEO"
+              RESOLVED_URLS+=("$CHOSEN_VIDEO")
+            else
+              echo "⚠️  Could not verify a match, using raw URL."
+              RESOLVED_URLS+=("$URL")
+            fi
+          }
+
           for url in "${URL_LIST[@]}"; do
             if [[ "$url" =~ open\.spotify\.com|^spotify:|spotify\.com ]]; then
               HAS_SPOTIFY=true
-              echo "🎧 Spotify URL detected: $url"
-              SPOTIFY_JSON=$(curl -s "https://open.spotify.com/oembed?url=${url}" || echo "")
-              SPOTIFY_TITLE=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
-              SPOTIFY_AUTHOR=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('author_name',''))" 2>/dev/null || echo "")
-              if [ -n "$SPOTIFY_TITLE" ]; then
-                echo "🎧 Resolved: $SPOTIFY_TITLE — $SPOTIFY_AUTHOR"
-                RESOLVED_URLS+=("ytsearch1:${SPOTIFY_TITLE} ${SPOTIFY_AUTHOR}")
-              else
-                echo "⚠️  Could not resolve Spotify title, using raw URL."
-                RESOLVED_URLS+=("$url")
-              fi
+              resolve_spotify "$url"
             else
               RESOLVED_URLS+=("$url")
             fi

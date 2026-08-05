@@ -351,7 +351,9 @@ jobs:
 
             echo "🔎 Checking available formats..."
             FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" 2>&1 || true)
-            if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members"; then
+            # Detect members-only / subscriber-only / join-channel errors, which
+            # yt-dlp reports in several phrasings, and also a failed listing.
+            if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members|join this channel|LOGIN_REQUIRED"; then
               echo ""
               echo "╔══════════════════════════════════════════════════════════╗"
               echo "║   🔒  MEMBERS ONLY VIDEO DETECTED                          "

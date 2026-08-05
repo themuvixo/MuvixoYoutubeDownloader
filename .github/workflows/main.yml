@@ -204,9 +204,26 @@ jobs:
               RESOLVED_URLS+=("$URL")
               return
             fi
-            echo "🎧 Target: $SPOTIFY_TITLE — $SPOTIFY_AUTHOR"
+            # Spotify's oEmbed often omits author_name (strict per-track). When
+            # missing, fall back to the track page's <meta description>, which
+            # reliably carries "... Song · <Artist> · <Year>". Without the
+            # artist the search degenerates to title-only and can rank a full
+            # movie above the real song.
+            if [ -z "$SPOTIFY_AUTHOR" ]; then
+              echo "ℹ️  oEmbed gave no artist — parsing track page..."
+              SPOTIFY_AUTHOR=$(curl -s "${URL}" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" | python3 -c "import sys,re; s=sys.stdin.read(); m=re.search(r'Song\s*·\s*([^·]{1,80})', s); print(m.group(1).strip()) if m and m.group(1).strip() else None" 2>/dev/null || true)
+              if [ -n "$SPOTIFY_AUTHOR" ]; then
+                echo "   👤 recovered artist: $SPOTIFY_AUTHOR"
+              else
+                echo "   ⚠️  still no artist — will search by title only."
+              fi
+            fi
+            echo "🎧 Target: $SPOTIFY_TITLE — ${SPOTIFY_AUTHOR:-unknown}"
 
             # Gather up to 10 candidate search results (id, title, channel).
+            # Include the artist in the query when we have it, so that the
+            # session actually surfaces the artist's own (Topic) uploads.
+            SEARCH_Q="${SPOTIFY_TITLE}${SPOTIFY_AUTHOR:+ ${SPOTIFY_AUTHOR}}"
             yt-dlp \
               --proxy "socks5://127.0.0.1:1080" \
               --extractor-args "youtube:player_client=web" \
@@ -214,7 +231,7 @@ jobs:
               --remote-components ejs:github \
               --skip-download --no-warnings --no-check-certificates \
               --print "%(id)s|||%(title)s|||%(channel)s" \
-              "ytsearch10:${SPOTIFY_TITLE} ${SPOTIFY_AUTHOR}" \
+              "ytsearch10:${SEARCH_Q}" \
               2>/dev/null > /tmp/spotify_candidates.txt || true
 
             export SPOTIFY_TITLE SPOTIFY_AUTHOR
@@ -246,36 +263,58 @@ jobs:
           except OSError:
               pass
 
+          # Reject likely-movie uploads up front. A music search that ranks a
+          # "Full Movie / فیلم" first is a signal the search degenerated (e.g.
+          # artist lost from the query) — we never want the movie.
+          MOVIE = re.compile(r'(full\s*movie|فیلم|filme\s*farsi|film\s*farsi|filmnama|movie\s*\d|دانلود\s*فیلم)', re.I)
+          def is_movie(t, ch):
+              return bool(MOVIE.search(t)) or bool(MOVIE.search(ch))
+
+          # "X - Topic" channels are YouTube's auto-generated artist channels;
+          # an upload there is the authoritative source for the song.
+          def is_topic(ch):
+              return ' topic' in ch or ch.endswith('topic') or '- topic' in ch
+
+          # visible candidates = non-movie uploads, in original ranking order
+          visible = [(vid, t, ch) for vid, t, ch in cands if not is_movie(t, ch)]
+
           def close(a, b):
               if not a or not b:
                   return False
               return a == b or a in b or b in a
 
-          # tier 1: channel name matches the artist (exact or substring each way)
-          for vid, t, ch in cands:
-              if close(ch, author):
-                  print(f"https://www.youtube.com/watch?v={vid}")
-                  raise SystemExit(0)
+          def author_in_channel(ch):
+              # every artist token appears in the channel name
+              return bool(au) and all(w in ch for w in au)
 
-          # tier 2: channel contains every artist token, e.g. "Afshin Moghaddam" in
-          # "Afshin Moghaddam Official" / "افشین مقدم"
-          for vid, t, ch in cands:
-              cw = ch.lower()
-              if au and all(w in cw for w in au):
-                  print(f"https://www.youtube.com/watch?v={vid}")
-                  raise SystemExit(0)
+          def pick(pred):
+              for vid, t, ch in visible:
+                  if pred(ch, t):
+                      print(f"https://www.youtube.com/watch?v={vid}")
+                      raise SystemExit(0)
 
-          # tier 3: title matches the artist exactly (usually the artist's own upload)
-          for vid, t, ch in cands:
-              if close(t, author):
-                  print(f"https://www.youtube.com/watch?v={vid}")
-                  raise SystemExit(0)
+          # tier 1: artist's own auto-generated "Topic" channel
+          pick(lambda ch, t: is_topic(ch) and (close(ch, author) or author_in_channel(ch)))
+          # tier 2: channel name matches the artist (exact or substring each way)
+          pick(lambda ch, t: close(ch, author))
+          # tier 3: channel contains every artist token (e.g. "Afshin Moghaddam" in
+          # "Afshin Moghaddam Official" / "افشین مقدم")
+          pick(lambda ch, t: author_in_channel(ch))
+          # tier 4: title matches the artist exactly (usually the artist's own upload)
+          pick(lambda ch, t: close(t, author))
+          # tier 5: artist's Topic channel, even when the channel name doesn't
+          # contain the artist (e.g. "ali danial - Topic" for composer "Ali Danial")
+          pick(lambda ch, t: is_topic(ch))
 
-          # fallback: no verified match — keep first candidate
+          # fallback: first non-movie candidate
+          for vid, t, ch in visible:
+              print(f"https://www.youtube.com/watch?v={vid}")
+              raise SystemExit(0)
+          # last resort: first candidate even if it looks like a movie
           for vid, t, ch in cands:
               print(f"https://www.youtube.com/watch?v={vid}")
               raise SystemExit(0)
-          # last resort: no candidates at all
+          # no candidates at all — let yt-dlp do a fresh 1-result search
           print(f"ytsearch1:{__import__('os').environ.get('SPOTIFY_TITLE','')} {__import__('os').environ.get('SPOTIFY_AUTHOR','')}")
           PY
             )

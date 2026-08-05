@@ -350,7 +350,21 @@ jobs:
             mkdir -p "$TMP_DIR"
 
             echo "🔎 Checking available formats..."
-            yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" || echo "   (could not list formats — proceeding with download anyway)"
+            FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" 2>&1 || true)
+            if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members"; then
+              echo ""
+              echo "╔══════════════════════════════════════════════════════════╗"
+              echo "║   🔒  MEMBERS ONLY VIDEO DETECTED                          "
+              echo "╚══════════════════════════════════════════════════════════╝"
+              echo "  🔗 $URL"
+              echo "  ⚠️  This video is members-only / subscriber-only and"
+              echo "      cannot be downloaded."
+              echo "  ❌  Skipping this URL."
+              echo ""
+              rm -rf "$TMP_DIR"
+              continue
+            fi
+            echo "$FORMAT_LISTING"
             echo ""
 
             DOWNLOAD_SUCCESS=false

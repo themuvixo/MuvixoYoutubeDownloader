@@ -38,6 +38,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -836,20 +837,45 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Get Artifact ID
+        if: always()
+        id: artifact_info
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            | jq -r '.artifacts[0].id')
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
+          echo "artifact_url=${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" >> $GITHUB_OUTPUT
+
       - name: Print Download Link
         if: always()
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+          DIRECT_API_URL="${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/${{ steps.artifact_info.outputs.artifact_id }}/zip"
+          
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
           echo "║                    ✅  A L L   D O N E                     ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
-          echo "  Download link: ${RUN_URL}"
+          echo "  📦 DIRECT DOWNLOAD LINKS:"
+          echo ""
+          echo "  🔗 Web UI (click to download):"
+          echo "     ${ARTIFACT_URL}"
+          echo ""
+          echo "  🔗 API (for curl/wget, requires authentication):"
+          echo "     ${DIRECT_API_URL}"
+          echo ""
+          echo "  📋 Workflow run: ${RUN_URL}"
           echo ""
           echo "  📦 Artifact name : muvixo-youtube-download-${{ github.run_id }}"
           echo "  🎬 Format        : Single MP4 file (no size limit inside artifact)"
           echo "  🗓️  Available for : 7 days"
+          echo ""
+          echo "  💡 To download via curl:"
+          echo "     curl -L -H \"Authorization: token YOUR_GITHUB_TOKEN\" \\"
+          echo "          -o muvixo-download.zip ${DIRECT_API_URL}"
           echo ""
           echo "──────────────────────────────────────────"
           echo "        ✨ Created by Muvixo ✨"

@@ -149,33 +149,41 @@ jobs:
           echo ""
 
           # ============================================================
-          # OPTIMIZED FORMAT STRINGS – support for 4K and high quality
-          # Video is always merged/remuxed to mp4 (except audio-only mode).
+          # FIXED FORMAT STRINGS – supports all quality levels reliably
           # ============================================================
           case "$QUALITY" in
             "audio")
               FORMAT="bestaudio/bestaudio*"
               ;;
             "best")
-              FORMAT="bestvideo+bestaudio/bestvideo*+bestaudio*/best"
+              FORMAT="bestvideo+bestaudio/best"
               ;;
             "2160"|"4k")
-              FORMAT="bestvideo[height=2160]+bestaudio/bestvideo[height<=2160]+bestaudio/bestvideo[height=2160]*+bestaudio*/bestvideo[height<=2160]*+bestaudio*"
+              FORMAT="bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
               ;;
             "1440"|"2k")
-              FORMAT="bestvideo[height=1440]+bestaudio/bestvideo[height<=1440]+bestaudio/bestvideo[height=1440]*+bestaudio*/bestvideo[height<=1440]*+bestaudio*"
+              FORMAT="bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
               ;;
             "1080")
-              FORMAT="bestvideo[height=1080]+bestaudio/bestvideo[height<=1080]+bestaudio/bestvideo[height=1080]*+bestaudio*/bestvideo[height<=1080]*+bestaudio*"
+              FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
               ;;
             "720")
-              FORMAT="bestvideo[height=720]+bestaudio/bestvideo[height<=720]+bestaudio/bestvideo[height=720]*+bestaudio*/bestvideo[height<=720]*+bestaudio*"
+              FORMAT="bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
               ;;
             "480")
-              FORMAT="bestvideo[height=480]+bestaudio/bestvideo[height<=480]+bestaudio/bestvideo[height=480]*+bestaudio*/bestvideo[height<=480]*+bestaudio*"
+              FORMAT="bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+              ;;
+            "360")
+              FORMAT="bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+              ;;
+            "260")
+              FORMAT="bestvideo[height<=260][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=260]+bestaudio/best[height<=260]/best"
+              ;;
+            "144")
+              FORMAT="bestvideo[height<=144][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=144]+bestaudio/best[height<=144]/best"
               ;;
             *)
-              FORMAT="bestvideo+bestaudio/bestvideo*+bestaudio*/best"
+              FORMAT="bestvideo+bestaudio/best"
               ;;
           esac
 
@@ -184,12 +192,6 @@ jobs:
           echo "$ZIP_PASSWORD" > /tmp/yt_password.txt
 
           # ── Resolve Spotify URLs → verified YouTube video ────────────────
-          # We do NOT trust a blind `ytsearch1:<title> <artist>` — it returns
-          # Google's top-ranked hit with zero author verification, so a query
-          # like "Ey Khoda" can match a song by a different artist whose name
-          # merely contains those words. Instead we pull up to 10 search
-          # results and pick the one whose channel actually matches the
-          # Spotify artist (Persian-safe), then download that exact video.
           RESOLVED_URLS=()
           HAS_SPOTIFY=false
 
@@ -205,11 +207,6 @@ jobs:
               RESOLVED_URLS+=("$URL")
               return
             fi
-            # Spotify's oEmbed often omits author_name (strict per-track). When
-            # missing, fall back to the track page's <meta description>, which
-            # reliably carries "... Song · <Artist> · <Year>". Without the
-            # artist the search degenerates to title-only and can rank a full
-            # movie above the real song.
             if [ -z "$SPOTIFY_AUTHOR" ]; then
               echo "ℹ️  oEmbed gave no artist — parsing track page..."
               SPOTIFY_AUTHOR=$(curl -s "${URL}" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" | python3 -c "import sys,re; s=sys.stdin.read(); m=re.search(r'Song\s*·\s*([^·]{1,80})', s); print(m.group(1).strip()) if m and m.group(1).strip() else None" 2>/dev/null || true)
@@ -221,9 +218,6 @@ jobs:
             fi
             echo "🎧 Target: $SPOTIFY_TITLE — ${SPOTIFY_AUTHOR:-unknown}"
 
-            # Gather up to 10 candidate search results (id, title, channel).
-            # Include the artist in the query when we have it, so that the
-            # session actually surfaces the artist's own (Topic) uploads.
             SEARCH_Q="${SPOTIFY_TITLE}${SPOTIFY_AUTHOR:+ ${SPOTIFY_AUTHOR}}"
             yt-dlp \
               --proxy "socks5://127.0.0.1:1080" \
@@ -241,7 +235,6 @@ jobs:
 
           def norm(s):
               s = (s or '').lower()
-              # keep latin letters/digits + Arabic/Persian block (for Persian text)
               s = re.sub(r'[^\w؀-ۿݐ-ݿﹰ-﻿ ]', ' ', s)
               return re.sub(r'\s+', ' ', s).strip()
 
@@ -264,19 +257,13 @@ jobs:
           except OSError:
               pass
 
-          # Reject likely-movie uploads up front. A music search that ranks a
-          # "Full Movie / فیلم" first is a signal the search degenerated (e.g.
-          # artist lost from the query) — we never want the movie.
           MOVIE = re.compile(r'(full\s*movie|فیلم|filme\s*farsi|film\s*farsi|filmnama|movie\s*\d|دانلود\s*فیلم)', re.I)
           def is_movie(t, ch):
               return bool(MOVIE.search(t)) or bool(MOVIE.search(ch))
 
-          # "X - Topic" channels are YouTube's auto-generated artist channels;
-          # an upload there is the authoritative source for the song.
           def is_topic(ch):
               return ' topic' in ch or ch.endswith('topic') or '- topic' in ch
 
-          # visible candidates = non-movie uploads, in original ranking order
           visible = [(vid, t, ch) for vid, t, ch in cands if not is_movie(t, ch)]
 
           def close(a, b):
@@ -285,7 +272,6 @@ jobs:
               return a == b or a in b or b in a
 
           def author_in_channel(ch):
-              # every artist token appears in the channel name
               return bool(au) and all(w in ch for w in au)
 
           def pick(pred):
@@ -294,28 +280,18 @@ jobs:
                       print(f"https://www.youtube.com/watch?v={vid}")
                       raise SystemExit(0)
 
-          # tier 1: artist's own auto-generated "Topic" channel
           pick(lambda ch, t: is_topic(ch) and (close(ch, author) or author_in_channel(ch)))
-          # tier 2: channel name matches the artist (exact or substring each way)
           pick(lambda ch, t: close(ch, author))
-          # tier 3: channel contains every artist token (e.g. "Afshin Moghaddam" in
-          # "Afshin Moghaddam Official" / "افشین مقدم")
           pick(lambda ch, t: author_in_channel(ch))
-          # tier 4: title matches the artist exactly (usually the artist's own upload)
           pick(lambda ch, t: close(t, author))
-          # tier 5: artist's Topic channel, even when the channel name doesn't
-          # contain the artist (e.g. "ali danial - Topic" for composer "Ali Danial")
           pick(lambda ch, t: is_topic(ch))
 
-          # fallback: first non-movie candidate
           for vid, t, ch in visible:
               print(f"https://www.youtube.com/watch?v={vid}")
               raise SystemExit(0)
-          # last resort: first candidate even if it looks like a movie
           for vid, t, ch in cands:
               print(f"https://www.youtube.com/watch?v={vid}")
               raise SystemExit(0)
-          # no candidates at all — let yt-dlp do a fresh 1-result search
           print(f"ytsearch1:{__import__('os').environ.get('SPOTIFY_TITLE','')} {__import__('os').environ.get('SPOTIFY_AUTHOR','')}")
           PY
             )
@@ -336,7 +312,6 @@ jobs:
               RESOLVED_URLS+=("$url")
             fi
           done
-          # Spotify links are always audio → MP3
           if [ "$HAS_SPOTIFY" = true ]; then
             QUALITY="audio"
             FORMAT="bestaudio/bestaudio*"
@@ -345,7 +320,6 @@ jobs:
             echo "🎧 Spotify mode active — quality forced to audio (MP3)."
           fi
 
-          # Save resolved URL list (newline separated)
           printf "%s\n" "${RESOLVED_URLS[@]}" > /tmp/yt_urls.txt
 
       - name: Download YouTube Video(s)
@@ -385,8 +359,8 @@ jobs:
             if [ "$QUALITY" = "audio" ]; then
               COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             else
-              # Always remux/merge to mp4 — single file
-              COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --format-sort res,+codec:vp9.1,+size --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
+              # FIXED: Better merging approach - preserve quality
+              COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
             case $METHOD in
               1)
@@ -481,8 +455,6 @@ jobs:
 
             echo "🔎 Checking available formats..."
             FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" 2>&1 || true)
-            # Detect members-only / subscriber-only / join-channel errors, which
-            # yt-dlp reports in several phrasings, and also a failed listing.
             if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members|join this channel|LOGIN_REQUIRED"; then
               echo ""
               echo "╔══════════════════════════════════════════════════════════╗"
@@ -505,7 +477,7 @@ jobs:
                 echo "   ✅ download successful with method $METHOD!"
 
                 QUALITY_OK=true
-                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
+                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ] && [ "$QUALITY" != "best" ]; then
                   for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
                     [ -f "$DOWNLOADED_FILE" ] || continue
                     ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
@@ -554,7 +526,6 @@ jobs:
             echo "  Files:"
             ls -la "$TMP_DIR/"
 
-            # ── Process each downloaded file — kept as a single file, no splitting ──
             for FILE in "$TMP_DIR"/*; do
               [ -f "$FILE" ] || continue
               if [[ "$FILE" == *.jpg ]] || [[ "$FILE" == *.webp ]]; then
@@ -600,7 +571,6 @@ jobs:
                 echo "  ✅ saved."
               fi
 
-              # ── Generate a clean per-video README ──
               README_FILE="$OUTPUT_DIR/${FINAL_FOLDER_NAME}/README.md"
               {
                 echo "# 🎬 ${FILENAME_NO_EXT}"

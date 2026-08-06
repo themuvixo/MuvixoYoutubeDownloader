@@ -32,16 +32,28 @@ on:
         required: false
         default: ''
         type: string
+
+# Concurrency control to prevent multiple runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   download-youtube:
-    runs-on: ubuntu-latest
+    # FIXED: Use specific version and add fallback
+    runs-on: [ubuntu-22.04, ubuntu-latest]
     timeout-minutes: 180
     permissions:
       contents: read
       actions: read
+    
+    # FIXED: Ensure job starts properly
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - name: Show Banner
         run: |
@@ -52,6 +64,8 @@ jobs:
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
           echo "  ✨ Created by Muvixo"
+          echo "  🏃 Runner: $(uname -a)"
+          echo "  📦 Available Memory: $(free -h | grep Mem | awk '{print $2}')"
           echo ""
 
       - name: Start WARP Container

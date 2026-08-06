@@ -1,4 +1,5 @@
-name: 📁Youtube Downloader
+name: 📁 Youtube Downloader
+
 on:
   workflow_dispatch:
     inputs:
@@ -33,7 +34,6 @@ on:
         default: ''
         type: string
 
-# Concurrency control to prevent multiple runs
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -54,21 +54,31 @@ jobs:
       - name: Show Banner
         run: |
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║                                                              "
-          echo "║   🎬  M U V I X O   —   Y O U T U B E   D O W N L O A D E R  "
-          echo "║                                                              "
+          echo "║   🎬  M U V I X O   —   Y O U T U B E   D O W N L O A D E R  ║"
+          echo "║   ✨ Created by Muvixo                                    ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
-          echo "  ✨ Created by Muvixo"
-          echo "  🏃 Runner: $(uname -a)"
-          echo "  📦 Available Memory: $(free -h | grep Mem | awk '{print $2}')"
+          echo "  💡 This workflow downloads YouTube videos"
+          echo "  ⚠️  May take several minutes depending on video length"
           echo ""
+
+      - name: Setup Environment
+        run: |
+          # Create output directory
+          mkdir -p /tmp/output
+          echo "/tmp/output" > /tmp/output_dir_path.txt
+          
+          # Check disk space
+          echo "📊 Available disk space:"
+          df -h /
+          
+          # Check memory
+          echo "📊 Available memory:"
+          free -h
 
       - name: Start WARP Container
         run: |
-          echo "──────────────────────────────────────────"
-          echo " 🌐  NETWORK  ·  Starting Cloudflare WARP"
-          echo "──────────────────────────────────────────"
+          echo "🌐 Starting Cloudflare WARP container..."
           docker network create warp-net || true
           docker run -d \
             --name warp \
@@ -80,51 +90,59 @@ jobs:
             --sysctl net.ipv4.conf.all.src_valid_mark=1 \
             -v warp-data:/var/lib/cloudflare-warp \
             caomingjun/warp
-          echo "⏳ Waiting for WARP to initialize (15s)..."
-          sleep 15
-          echo "🔎 Checking WARP status..."
-          for i in {1..5}; do
-            RESULT=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo "failed")
-            if echo "$RESULT" | grep -qE "warp=(on|plus)"; then
-              echo "✅ WARP is active!"
-              echo "$RESULT"
+          
+          echo "⏳ Waiting for WARP to initialize..."
+          sleep 20
+          
+          # Verify WARP is running
+          if ! docker ps | grep -q warp; then
+            echo "❌ WARP container failed to start"
+            exit 1
+          fi
+          
+          # Test WARP connection with retry
+          echo "🔍 Testing WARP connection..."
+          WARP_READY=false
+          for i in {1..10}; do
+            if curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+              WARP_READY=true
+              echo "✅ WARP proxy is ready!"
               break
-            else
-              echo "   attempt $i/5 — not ready yet, waiting..."
-              sleep 5
             fi
+            echo "   attempt $i/10 — waiting..."
+            sleep 5
           done
-          FINAL=$(curl -s --max-time 10 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo "failed")
-          if echo "$FINAL" | grep -qE "warp=(on|plus)"; then
-            echo "✅ WARP proxy is ready!"
-          else
-            echo "⚠️  WARP might not be fully active, continuing anyway..."
-            echo "   Response: $FINAL"
+          
+          if [ "$WARP_READY" = false ]; then
+            echo "⚠️  WARP may not be fully active, continuing anyway..."
           fi
 
       - name: Install Dependencies
         run: |
-          echo "──────────────────────────────────────────"
-          echo " 📦  SETUP  ·  Installing dependencies"
-          echo "──────────────────────────────────────────"
-          sudo apt-get update
-          sudo apt-get install -y python3-pip ffmpeg zip p7zip-full curl jq bc unzip
-          # Install Deno (JS runtime required by yt-dlp for YouTube n-challenge solving)
+          echo "📦 Installing dependencies..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pip ffmpeg zip p7zip-full curl jq bc unzip
+          
+          # Install Deno
+          echo "🦕 Installing Deno..."
           curl -fsSL https://deno.land/install.sh | sh
           export DENO_INSTALL="$HOME/.deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
           deno --version
-          pip3 install --upgrade yt-dlp
-          echo "✅ Dependencies ready."
+          
+          # Install yt-dlp
+          echo "📥 Installing yt-dlp..."
+          pip3 install --upgrade yt-dlp -q
+          echo "✅ All dependencies installed"
 
-      - name: Download Setup (functions & config)
+      - name: Process URLs and Setup
         env:
           YT_URLS: ${{ github.event.inputs.youtube_urls }}
           YT_QUALITY: ${{ github.event.inputs.quality }}
           YT_PASSWORD: ${{ github.event.inputs.password }}
         run: |
-          # ── Parse all URLs (space-separated) ────────────────────────────────
+          # Parse all URLs
           URLS_RAW="${YT_URLS}"
           read -ra URL_LIST <<< "$URLS_RAW"
           TOTAL_URLS=${#URL_LIST[@]}
@@ -132,7 +150,7 @@ jobs:
           ZIP_PASSWORD="${YT_PASSWORD}"
           DOWNLOAD_SUBS="${{ github.event.inputs.download_subtitles }}"
 
-          # Output directory for finished files — this whole folder becomes the artifact
+          # Output directory
           OUTPUT_DIR="/tmp/output"
           mkdir -p "$OUTPUT_DIR"
           echo "$OUTPUT_DIR" > /tmp/output_dir_path.txt
@@ -140,7 +158,7 @@ jobs:
           > /tmp/video_info.txt
 
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║  📋  JOB SUMMARY                                            "
+          echo "║  📋  JOB SUMMARY                                        ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo "  • URLs queued     : $TOTAL_URLS"
           echo "  • Quality         : $QUALITY"
@@ -158,9 +176,7 @@ jobs:
           echo "  • Delivery        : GitHub Actions Artifact 📦"
           echo ""
 
-          # ============================================================
-          # FIXED FORMAT STRINGS – supports all quality levels reliably
-          # ============================================================
+          # Format selection
           case "$QUALITY" in
             "audio")
               FORMAT="bestaudio/bestaudio*"
@@ -201,10 +217,7 @@ jobs:
           echo "$QUALITY" > /tmp/yt_quality.txt
           echo "$ZIP_PASSWORD" > /tmp/yt_password.txt
 
-          # ── Resolve Spotify URLs → verified YouTube video ────────────────
-          RESOLVED_URLS=()
-          HAS_SPOTIFY=false
-
+          # Spotify URL resolver function
           resolve_spotify() {
             local URL="$1"
             echo "🎧 Spotify URL detected: $URL"
@@ -212,22 +225,15 @@ jobs:
             SPOTIFY_JSON=$(curl -s "https://open.spotify.com/oembed?url=${URL}" || echo "")
             SPOTIFY_TITLE=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
             SPOTIFY_AUTHOR=$(echo "$SPOTIFY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('author_name',''))" 2>/dev/null || echo "")
+            
             if [ -z "$SPOTIFY_TITLE" ]; then
               echo "⚠️  Could not resolve Spotify title, using raw URL."
-              RESOLVED_URLS+=("$URL")
+              echo "$URL"
               return
             fi
-            if [ -z "$SPOTIFY_AUTHOR" ]; then
-              echo "ℹ️  oEmbed gave no artist — parsing track page..."
-              SPOTIFY_AUTHOR=$(curl -s "${URL}" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" | python3 -c "import sys,re; s=sys.stdin.read(); m=re.search(r'Song\s*·\s*([^·]{1,80})', s); print(m.group(1).strip()) if m and m.group(1).strip() else None" 2>/dev/null || true)
-              if [ -n "$SPOTIFY_AUTHOR" ]; then
-                echo "   👤 recovered artist: $SPOTIFY_AUTHOR"
-              else
-                echo "   ⚠️  still no artist — will search by title only."
-              fi
-            fi
+            
             echo "🎧 Target: $SPOTIFY_TITLE — ${SPOTIFY_AUTHOR:-unknown}"
-
+            
             SEARCH_Q="${SPOTIFY_TITLE}${SPOTIFY_AUTHOR:+ ${SPOTIFY_AUTHOR}}"
             yt-dlp \
               --proxy "socks5://127.0.0.1:1080" \
@@ -305,23 +311,30 @@ jobs:
           print(f"ytsearch1:{__import__('os').environ.get('SPOTIFY_TITLE','')} {__import__('os').environ.get('SPOTIFY_AUTHOR','')}")
           PY
             )
+            
             if [ -n "$CHOSEN_VIDEO" ]; then
               echo "🔎 Verified match: $CHOSEN_VIDEO"
-              RESOLVED_URLS+=("$CHOSEN_VIDEO")
+              echo "$CHOSEN_VIDEO"
             else
               echo "⚠️  Could not verify a match, using raw URL."
-              RESOLVED_URLS+=("$URL")
+              echo "$URL"
             fi
           }
 
+          # Process all URLs
+          RESOLVED_URLS=()
+          HAS_SPOTIFY=false
+          
           for url in "${URL_LIST[@]}"; do
             if [[ "$url" =~ open\.spotify\.com|^spotify:|spotify\.com ]]; then
               HAS_SPOTIFY=true
-              resolve_spotify "$url"
+              resolved=$(resolve_spotify "$url")
+              RESOLVED_URLS+=("$resolved")
             else
               RESOLVED_URLS+=("$url")
             fi
           done
+          
           if [ "$HAS_SPOTIFY" = true ]; then
             QUALITY="audio"
             FORMAT="bestaudio/bestaudio*"
@@ -349,10 +362,12 @@ jobs:
           sanitize_name() {
             echo "$1" | sed 's/ /-/g' | sed 's/　/-/g' | tr -s '-'
           }
+          
           get_random_word() {
             RANDOM_WORDS=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "theta" "kappa" "lambda" "sigma" "omega" "nova" "star" "moon" "sun" "sky" "cloud" "river" "ocean" "mountain")
             echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}_$RANDOM"
           }
+          
           get_unique_folder() {
             local BASE_PATH="$1"
             local NAME="$2"
@@ -371,12 +386,13 @@ jobs:
             local URL=$2
             local TMP_DIR=$3
             echo "   ▸ trying method $METHOD..."
+            
             if [ "$QUALITY" = "audio" ]; then
               COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             else
-              # FIXED: Better merging approach - preserve quality
               COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
+            
             case $METHOD in
               1)
                 yt-dlp \
@@ -388,7 +404,7 @@ jobs:
                   --remote-components ejs:github \
                   --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                   --add-header "Accept-Language:en-US,en;q=0.9" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               2)
                 yt-dlp \
@@ -400,7 +416,7 @@ jobs:
                   --remote-components ejs:npm \
                   --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                   --add-header "Accept-Language:en-US,en;q=0.9" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               3)
                 yt-dlp \
@@ -410,7 +426,7 @@ jobs:
                   --extractor-args "youtube:player_client=web,mweb,android_vr" \
                   --js-runtimes deno \
                   --remote-components ejs:github \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               4)
                 yt-dlp \
@@ -418,7 +434,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=mweb" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               5)
                 yt-dlp \
@@ -426,7 +442,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=android_vr" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               6)
                 yt-dlp \
@@ -435,14 +451,14 @@ jobs:
                   --extractor-args "youtube:player_client=web" \
                   --js-runtimes deno \
                   --remote-components ejs:github \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               7)
                 yt-dlp \
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=mweb" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
               8)
                 yt-dlp \
@@ -451,12 +467,15 @@ jobs:
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=android" \
                   --user-agent "Mozilla/5.0 (Linux; Android 12; SM-S906N Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36" \
-                  "$URL"
+                  "$URL" 2>&1
                 ;;
             esac
+            return $?
           }
 
+          FAILED_DOWNLOADS=0
           URL_INDEX=0
+          
           for URL in "${URL_LIST[@]}"; do
             URL_INDEX=$((URL_INDEX + 1))
             echo ""
@@ -465,15 +484,17 @@ jobs:
             echo "╚══════════════════════════════════════════════════════════╝"
             echo "  🔗 $URL"
             echo ""
+            
             TMP_DIR="tmp_downloads_${URL_INDEX}"
             mkdir -p "$TMP_DIR"
 
+            # Check if video is members-only
             echo "🔎 Checking available formats..."
             FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" 2>&1 || true)
             if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members|join this channel|LOGIN_REQUIRED"; then
               echo ""
               echo "╔══════════════════════════════════════════════════════════╗"
-              echo "║   🔒  MEMBERS ONLY VIDEO DETECTED                          "
+              echo "║   🔒  MEMBERS ONLY VIDEO DETECTED                      ║"
               echo "╚══════════════════════════════════════════════════════════╝"
               echo "  🔗 $URL"
               echo "  ⚠️  This video is members-only / subscriber-only and"
@@ -481,9 +502,11 @@ jobs:
               echo "  ❌  Skipping this URL."
               echo ""
               rm -rf "$TMP_DIR"
+              FAILED_DOWNLOADS=$((FAILED_DOWNLOADS + 1))
               continue
             fi
-            echo "$FORMAT_LISTING"
+            
+            echo "$FORMAT_LISTING" | head -20
             echo ""
 
             DOWNLOAD_SUCCESS=false
@@ -491,6 +514,7 @@ jobs:
               if download_video $METHOD "$URL" "$TMP_DIR"; then
                 echo "   ✅ download successful with method $METHOD!"
 
+                # Quality verification
                 QUALITY_OK=true
                 if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
                   for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
@@ -532,9 +556,11 @@ jobs:
               echo ""
               echo "  ❌ All download methods failed for this URL — skipping."
               rm -rf "$TMP_DIR"
+              FAILED_DOWNLOADS=$((FAILED_DOWNLOADS + 1))
               continue
             fi
 
+            # Process downloaded files
             find "$TMP_DIR" -name "*.part" -delete
             echo ""
             echo "  ✅ Download complete!"
@@ -562,6 +588,7 @@ jobs:
               FINAL_FOLDER_NAME=$(get_unique_folder "$OUTPUT_DIR" "$FILENAME_NO_EXT")
               mkdir -p "$OUTPUT_DIR/${FINAL_FOLDER_NAME}"
 
+              # Handle thumbnail
               THUMB_FILE=$(ls "$TMP_DIR"/*.jpg 2>/dev/null | head -1)
               HAS_THUMB=false
               if [ -n "$THUMB_FILE" ] && [ -f "$THUMB_FILE" ]; then
@@ -574,18 +601,25 @@ jobs:
 
               echo "${FILENAME_NO_EXT}|${FINAL_FOLDER_NAME}|${URL}|${SIZE_MB}|${HAS_THUMB}" >> /tmp/video_info.txt
 
+              # Package the file
               if [ -n "$ZIP_PASSWORD" ]; then
                 echo "  🔒 creating password-protected zip..."
-                zip -0 -P "${ZIP_PASSWORD}" \
+                if zip -0 -P "${ZIP_PASSWORD}" \
                   "$OUTPUT_DIR/${FINAL_FOLDER_NAME}/${FINAL_FOLDER_NAME}.zip" \
-                  "$FILE"
-                echo "  ✅ archive created."
+                  "$FILE" 2>&1; then
+                  echo "  ✅ archive created."
+                else
+                  echo "  ❌ zip creation failed"
+                  cp "$FILE" "$OUTPUT_DIR/${FINAL_FOLDER_NAME}/${FINAL_FOLDER_NAME}.${EXT}"
+                  echo "  📄 saved as fallback ${EXT} file"
+                fi
               else
-                echo "  📄 saving as single ${EXT} file (no split, no zip)..."
+                echo "  📄 saving as single ${EXT} file..."
                 cp "$FILE" "$OUTPUT_DIR/${FINAL_FOLDER_NAME}/${FINAL_FOLDER_NAME}.${EXT}"
                 echo "  ✅ saved."
               fi
 
+              # Generate README
               README_FILE="$OUTPUT_DIR/${FINAL_FOLDER_NAME}/README.md"
               {
                 echo "# 🎬 ${FILENAME_NO_EXT}"
@@ -620,8 +654,14 @@ jobs:
 
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║  📂  OUTPUT FOLDER CONTENTS                                 "
+          echo "║  📊  DOWNLOAD SUMMARY                                    ║"
           echo "╚══════════════════════════════════════════════════════════╝"
+          echo "  • Successful: $((TOTAL_URLS - FAILED_DOWNLOADS)) / $TOTAL_URLS"
+          if [ $FAILED_DOWNLOADS -gt 0 ]; then
+            echo "  • Failed: $FAILED_DOWNLOADS ⚠️"
+          fi
+          echo ""
+          echo "  📂 OUTPUT FOLDER CONTENTS:"
           find "$OUTPUT_DIR" -type f | head -50
 
       - name: Download Subtitles
@@ -632,7 +672,7 @@ jobs:
           mapfile -t URL_LIST < /tmp/yt_urls.txt
 
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║  📝  SUBTITLES                                              "
+          echo "║  📝  SUBTITLES                                          ║"
           echo "╚══════════════════════════════════════════════════════════╝"
 
           sub_download() {
@@ -655,6 +695,7 @@ jobs:
                 auto-both)  echo "--write-auto-sub --sub-langs en,fa" ;;
               esac
             }
+            
             SFLAGS=$(sub_flags)
             COMMON_SUB="--sub-format vtt/srt/best --convert-subs vtt --skip-download --no-playlist --no-check-certificates --output ${OUT}"
 
@@ -792,6 +833,15 @@ jobs:
           echo ""
           echo "✅ Subtitle phase complete (failures handled gracefully)."
 
+      - name: Cleanup on Failure
+        if: failure()
+        run: |
+          echo "🧹 Cleaning up on failure..."
+          rm -rf /tmp/output
+          docker stop warp || true
+          docker rm warp || true
+          echo "✅ Cleanup complete"
+
       - name: Stop WARP Container
         if: always()
         run: |
@@ -805,12 +855,13 @@ jobs:
           FILE_COUNT=$(find "$OUTPUT_DIR" -type f 2>/dev/null | wc -l)
           TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1)
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║  📦  ARTIFACT SUMMARY                                       "
+          echo "║  📦  ARTIFACT SUMMARY                                   ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo "  • Files packed  : $FILE_COUNT"
           echo "  • Total size    : ${TOTAL_SIZE:-0}"
           echo ""
-          find "$OUTPUT_DIR" -type f 2>/dev/null | sort
+          echo "📂 Contents:"
+          find "$OUTPUT_DIR" -type f 2>/dev/null | sort || echo "No files found"
 
       - name: Upload Download as Artifact
         if: always()
@@ -822,7 +873,7 @@ jobs:
           retention-days: 7
 
       - name: Get Artifact ID
-        if: always()
+        if: always() && steps.artifact_info.outputs.artifact_id == ''
         id: artifact_info
         run: |
           ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -840,7 +891,7 @@ jobs:
           
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║                    ✅  A L L   D O N E                     ║"
+          echo "║                    ✅  A L L   D O N E                 ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
           echo "  📦 DIRECT DOWNLOAD LINKS:"

@@ -40,15 +40,11 @@ concurrency:
 
 jobs:
   download-youtube:
-    # FIXED: Use specific version and add fallback
-    runs-on: [ubuntu-22.04, ubuntu-latest]
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
       actions: read
-    
-    # FIXED: Ensure job starts properly
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     
     steps:
       - name: Checkout
@@ -336,6 +332,11 @@ jobs:
 
           printf "%s\n" "${RESOLVED_URLS[@]}" > /tmp/yt_urls.txt
 
+          if [ "${#RESOLVED_URLS[@]}" -eq 0 ]; then
+            echo "❌ No valid URLs to download."
+            exit 1
+          fi
+
       - name: Download YouTube Video(s)
         run: |
           FORMAT=$(cat /tmp/yt_format.txt)
@@ -491,7 +492,7 @@ jobs:
                 echo "   ✅ download successful with method $METHOD!"
 
                 QUALITY_OK=true
-                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ] && [ "$QUALITY" != "best" ]; then
+                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
                   for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
                     [ -f "$DOWNLOADED_FILE" ] || continue
                     ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
@@ -790,7 +791,6 @@ jobs:
 
           echo ""
           echo "✅ Subtitle phase complete (failures handled gracefully)."
-          exit 0
 
       - name: Stop WARP Container
         if: always()

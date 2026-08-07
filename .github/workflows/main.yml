@@ -560,38 +560,26 @@ jobs:
               if download_video $METHOD "$URL" "$TMP_DIR"; then
                 echo "   ✅ download successful with method $METHOD!"
 
-                # Quality verification
-                QUALITY_OK=true
-                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
-                  for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
-                    [ -f "$DOWNLOADED_FILE" ] || continue
-                    ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
-                    echo "   🎯 requested ${QUALITY}p → actual ${ACTUAL_HEIGHT}px"
-                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -lt $(( QUALITY - 50 )) ] 2>/dev/null; then
-                      echo "   ⚠️  method $METHOD delivered ${ACTUAL_HEIGHT}p instead of ${QUALITY}p — rejecting, trying next method..."
-                      QUALITY_OK=false
-                      rm -f "$DOWNLOADED_FILE"
-                    else
-                      echo "   ✅ quality check passed."
+                # Quality verification - WARN but ACCEPT if quality is lower
+                ACTUAL_HEIGHT="unknown"
+                for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
+                  [ -f "$DOWNLOADED_FILE" ] || continue
+                  ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
+                  
+                  if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ] && [ "$ACTUAL_HEIGHT" != "unknown" ]; then
+                    echo "   🎯 Requested ${QUALITY}p → got ${ACTUAL_HEIGHT}p"
+                    if [ "$ACTUAL_HEIGHT" -lt $(( QUALITY - 50 )) ] 2>/dev/null; then
+                      echo "   ⚠️  Warning: Got ${ACTUAL_HEIGHT}p instead of ${QUALITY}p"
+                      echo "   ℹ️  Keeping the file anyway (best available quality)"
                     fi
-                  done
-                elif [ "$QUALITY" = "best" ]; then
-                  for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
-                    [ -f "$DOWNLOADED_FILE" ] || continue
-                    ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
-                    echo "   🎯 best quality → actual ${ACTUAL_HEIGHT}px"
-                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -le 360 ] 2>/dev/null && [ $METHOD -lt 8 ]; then
-                      echo "   ⚠️  method $METHOD only got ${ACTUAL_HEIGHT}p for 'best' — likely JS challenge failure, trying next method..."
-                      QUALITY_OK=false
-                      rm -f "$DOWNLOADED_FILE"
-                    fi
-                  done
-                fi
+                  elif [ "$QUALITY" = "best" ]; then
+                    echo "   🎯 Best quality → got ${ACTUAL_HEIGHT}p"
+                  fi
+                done
 
-                if [ "$QUALITY_OK" = true ]; then
-                  DOWNLOAD_SUCCESS=true
-                  break
-                fi
+                # ACCEPT the download regardless of quality
+                DOWNLOAD_SUCCESS=true
+                break
               else
                 echo "   ❌ method $METHOD failed, waiting 3s before next attempt..."
                 sleep 3
@@ -949,7 +937,7 @@ jobs:
           echo "  📦 DIRECT DOWNLOAD LINKS:"
           echo ""
           echo "  🔗 Web UI (click to download):"
-          echo "     ${SPECIFIC_ARTIFACT_URL}"   # 👈 Now prints the direct link like you asked
+          echo "     ${SPECIFIC_ARTIFACT_URL}"
           echo ""
           echo "  🔗 API (for curl/wget, requires authentication):"
           echo "     ${DIRECT_API_URL}"

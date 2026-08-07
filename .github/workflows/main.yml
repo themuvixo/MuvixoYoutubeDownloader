@@ -306,9 +306,9 @@ jobs:
               "ytsearch10:${SEARCH_Q}" \
               2>/dev/null > /tmp/spotify_candidates.txt || true
             
-            # Find best match
+            # Find best match using Python inline (no heredoc)
             local CHOSEN_VIDEO
-            CHOSEN_VIDEO=$(python3 <<'PY' 2>/dev/null || echo "")
+            CHOSEN_VIDEO=$(python3 -c "
           import os, re, sys
 
           def clean(s):
@@ -318,7 +318,7 @@ jobs:
 
           search_title = clean(os.environ.get('SPOTIFY_TITLE', ''))
           search_artist = clean(os.environ.get('SPOTIFY_AUTHOR', ''))
-          
+
           candidates = []
           try:
               with open('/tmp/spotify_candidates.txt', 'r', encoding='utf-8', errors='ignore') as f:
@@ -331,42 +331,32 @@ jobs:
                           candidates.append((vid, title, channel))
           except:
               pass
-          
-          # Score each candidate
+
           best_score = 0
-          best_video = ""
-          
+          best_video = ''
           for vid, title, channel in candidates:
               score = 0
-              # Title match
               if search_title in title or title in search_title:
                   score += 10
-              # Artist match
               if search_artist in channel or channel in search_artist:
                   score += 15
-              # Both match
               if (search_title in title or title in search_title) and (search_artist in channel or channel in search_artist):
                   score += 20
-              # Avoid topics channels
               if 'topic' in channel:
                   score -= 5
-              # Prefer official music
               if 'official' in channel or 'vevo' in channel or 'music' in channel:
                   score += 5
-              
               if score > best_score:
                   best_score = score
                   best_video = vid
-          
+
           if best_video:
-              print(f"https://www.youtube.com/watch?v={best_video}")
+              print(f'https://www.youtube.com/watch?v={best_video}')
           else:
-              # Fallback to first result
               for vid, _, _ in candidates:
-                  print(f"https://www.youtube.com/watch?v={vid}")
+                  print(f'https://www.youtube.com/watch?v={vid}')
                   break
-          PY
-            )
+          " 2>/dev/null || echo "")
             
             if [ -n "$CHOSEN_VIDEO" ] && [[ "$CHOSEN_VIDEO" =~ ^https?:// ]]; then
               echo "🔎 Best match: $CHOSEN_VIDEO"

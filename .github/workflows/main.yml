@@ -939,6 +939,7 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
           DIRECT_API_URL="${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/${{ steps.artifact_info.outputs.artifact_id }}/zip"
+          SPECIFIC_ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ steps.artifact_info.outputs.artifact_id }}"
           
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
@@ -948,7 +949,7 @@ jobs:
           echo "  📦 DIRECT DOWNLOAD LINKS:"
           echo ""
           echo "  🔗 Web UI (click to download):"
-          echo "     ${ARTIFACT_URL}"
+          echo "     ${SPECIFIC_ARTIFACT_URL}"   # 👈 Now prints the direct link like you asked
           echo ""
           echo "  🔗 API (for curl/wget, requires authentication):"
           echo "     ${DIRECT_API_URL}"

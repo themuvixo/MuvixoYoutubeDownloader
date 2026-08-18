@@ -63,7 +63,6 @@ jobs:
           echo "  🏃 Runner: $(uname -a)"
           echo "  📦 Available Memory: $(free -h | grep Mem | awk '{print $2}')"
           echo ""
-
       - name: Start WARP Container
         run: |
           echo "──────────────────────────────────────────"
@@ -101,29 +100,21 @@ jobs:
             echo "⚠️  WARP might not be fully active, continuing anyway..."
             echo "   Response: $FINAL"
           fi
-
       - name: Install Dependencies
         run: |
           echo "──────────────────────────────────────────"
-          echo " 📦  SETUP  ·  Installing dependencies (Optimized for Speed)"
+          echo " 📦  SETUP  ·  Installing dependencies"
           echo "──────────────────────────────────────────"
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-pip ffmpeg zip p7zip-full curl jq bc unzip > /dev/null 2>&1
-          
-          # FIXED: Install Deno directly via zip download to prevent install.sh freezing
+          sudo apt-get update
+          sudo apt-get install -y python3-pip ffmpeg zip p7zip-full curl jq bc unzip
+          # Install Deno (JS runtime required by yt-dlp for YouTube n-challenge solving)
+          curl -fsSL https://deno.land/install.sh | sh
           export DENO_INSTALL="$HOME/.deno"
-          mkdir -p "$DENO_INSTALL/bin"
-          curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip
-          unzip -q -o /tmp/deno.zip -d "$DENO_INSTALL/bin"
-          chmod +x "$DENO_INSTALL/bin/deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
           deno --version
-          
-          # FIXED: Added --break-system-packages and -q for fast, prompt-less install
-          pip3 install --break-system-packages --upgrade -q yt-dlp
+          pip3 install --upgrade yt-dlp
           echo "✅ Dependencies ready."
-
       - name: Download Setup (functions & config)
         env:
           YT_URLS: ${{ github.event.inputs.youtube_urls }}
@@ -319,7 +310,6 @@ jobs:
             echo "❌ No valid URLs to download."
             exit 1
           fi
-
       - name: Download YouTube Video(s)
         run: |
           FORMAT=$(cat /tmp/yt_format.txt)
@@ -355,6 +345,7 @@ jobs:
             if [ "$QUALITY" = "audio" ]; then
               COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             else
+              # FIXED: Better merging approach - preserve quality
               COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
             case $METHOD in
@@ -464,8 +455,7 @@ jobs:
             echo "$FORMAT_LISTING"
             echo ""
             DOWNLOAD_SUCCESS=false
-            # FIXED: Restricted strictly to Method 3 as requested
-            for METHOD in 3; do
+            for METHOD in 1 2 3 4 5 6 7 8; do
               if download_video $METHOD "$URL" "$TMP_DIR"; then
                 echo "   ✅ download successful with method $METHOD!"
                 QUALITY_OK=true
@@ -475,7 +465,7 @@ jobs:
                     ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
                     echo "   🎯 requested ${QUALITY}p → actual ${ACTUAL_HEIGHT}px"
                     if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -lt $(( QUALITY - 50 )) ] 2>/dev/null; then
-                      echo "   ⚠️  method $METHOD delivered ${ACTUAL_HEIGHT}p instead of ${QUALITY}p — rejecting..."
+                      echo "   ⚠️  method $METHOD delivered ${ACTUAL_HEIGHT}p instead of ${QUALITY}p — rejecting, trying next method..."
                       QUALITY_OK=false
                       rm -f "$DOWNLOADED_FILE"
                     else
@@ -487,8 +477,8 @@ jobs:
                     [ -f "$DOWNLOADED_FILE" ] || continue
                     ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
                     echo "   🎯 best quality → actual ${ACTUAL_HEIGHT}px"
-                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -le 360 ] 2>/dev/null; then
-                      echo "   ⚠️  method $METHOD only got ${ACTUAL_HEIGHT}p for 'best' — likely JS challenge failure."
+                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -le 360 ] 2>/dev/null && [ $METHOD -lt 8 ]; then
+                      echo "   ⚠️  method $METHOD only got ${ACTUAL_HEIGHT}p for 'best' — likely JS challenge failure, trying next method..."
                       QUALITY_OK=false
                       rm -f "$DOWNLOADED_FILE"
                     fi
@@ -499,13 +489,13 @@ jobs:
                   break
                 fi
               else
-                echo "   ❌ method $METHOD failed."
+                echo "   ❌ method $METHOD failed, waiting 3s before next attempt..."
                 sleep 3
               fi
             done
             if [ "$DOWNLOAD_SUCCESS" = false ]; then
               echo ""
-              echo "  ❌ Method 3 failed for this URL — skipping."
+              echo "  ❌ All download methods failed for this URL — skipping."
               rm -rf "$TMP_DIR"
               continue
             fi
@@ -587,7 +577,6 @@ jobs:
           echo "║  📂  OUTPUT FOLDER CONTENTS                                 "
           echo "╚══════════════════════════════════════════════════════════╝"
           find "$OUTPUT_DIR" -type f | head -50
-
       - name: Download Subtitles
         if: ${{ github.event.inputs.download_subtitles == 'true' }}
         run: |
@@ -617,8 +606,7 @@ jobs:
             }
             SFLAGS=$(sub_flags)
             COMMON_SUB="--sub-format vtt/srt/best --convert-subs vtt --skip-download --no-playlist --no-check-certificates --output ${OUT}"
-            # FIXED: Restricted strictly to Method 3 as requested
-            for METHOD in 3; do
+            for METHOD in 1 2 3 4 5 6 7 8; do
               echo "   ▸ subtitle method $METHOD ..."
               case $METHOD in
                 1)
@@ -692,14 +680,14 @@ jobs:
                   echo "   ✅ success with method $METHOD (both en+fa)"
                   return 0
                 elif [ "$EN_GOT" -gt 0 ] || [ "$FA_GOT" -gt 0 ]; then
-                  echo "   ⚠️  partial success (en:$EN_GOT, fa:$FA_GOT)..."
+                  echo "   ⚠️  partial success (en:$EN_GOT, fa:$FA_GOT), trying next method..."
                 fi
               else
                 [ "$(sub_count)" -gt 0 ] && { echo "   ✅ success with method $METHOD"; return 0; }
               fi
               sleep 1
             done
-            echo "   ⚠️  method 3 failed for mode: $MODE"
+            echo "   ⚠️  all 8 methods failed for mode: $MODE"
             return 1
           }
           while IFS='|' read -r ORIGINAL_NAME FOLDER_NAME VIDEO_URL VIDEO_SIZE HAS_THUMB; do
@@ -741,13 +729,11 @@ jobs:
           done < /tmp/video_info.txt
           echo ""
           echo "✅ Subtitle phase complete (failures handled gracefully)."
-
       - name: Stop WARP Container
         if: always()
         run: |
           docker stop warp || true
           docker rm warp || true
-
       - name: Prepare Artifact Summary
         if: always()
         run: |
@@ -761,7 +747,6 @@ jobs:
           echo "  • Total size    : ${TOTAL_SIZE:-0}"
           echo ""
           find "$OUTPUT_DIR" -type f 2>/dev/null | sort
-
       - name: Upload Download as Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -780,7 +765,6 @@ jobs:
             | jq -r '.artifacts[0].id')
           echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
           echo "artifact_url=${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" >> $GITHUB_OUTPUT
-
       - name: Print Download Link
         if: always()
         run: |
@@ -813,4 +797,3 @@ jobs:
           echo ""
           echo "──────────────────────────────────────────"
           echo "        ✨ Created by Muvixo ✨"
-          echo "──────────────────────────────────────────"

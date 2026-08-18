@@ -101,9 +101,6 @@ jobs:
             echo "   Response: $FINAL"
           fi
 
-      # ------------------------------------------------------------
-      #  ULTRA‑RELIABLE DEPENDENCY INSTALLATION (no more freezes)
-      # ------------------------------------------------------------
       - name: Cache APT packages
         id: cache-apt
         uses: actions/cache@v4
@@ -150,11 +147,13 @@ jobs:
           retry sudo apt-get install -y --no-install-recommends \
             python3-pip ffmpeg zip p7zip-full curl jq bc unzip
 
-          # Install Deno directly (fast, no interactive script)
+          # Install Deno directly (fast, no interactive script) – FIXED PATH
           echo "▶️  Installing Deno..."
+          mkdir -p $HOME/.deno/bin
           curl -fsSL -o deno.zip https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip
-          unzip -o deno.zip -d $HOME/.deno
+          unzip -o deno.zip -d $HOME/.deno/bin
           rm deno.zip
+          chmod +x $HOME/.deno/bin/deno
           export DENO_INSTALL="$HOME/.deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
@@ -166,9 +165,7 @@ jobs:
 
           echo "✅ All dependencies installed successfully."
 
-      # ------------------------------------------------------------
-      #  REST OF THE WORKFLOW (unchanged, uses method 3 only)
-      # ------------------------------------------------------------
+      # ------------- REST OF WORKFLOW (unchanged, uses method 3 only) -------------
       - name: Download Setup (functions & config)
         env:
           YT_URLS: ${{ github.event.inputs.youtube_urls }}

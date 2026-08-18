@@ -101,18 +101,57 @@ jobs:
             echo "   Response: $FINAL"
           fi
 
-      - name: Install Dependencies
+      # ------------------------------------------------------------
+      #  ULTRA‑RELIABLE DEPENDENCY INSTALLATION (no more freezes)
+      # ------------------------------------------------------------
+      - name: Cache APT packages
+        id: cache-apt
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/apt-packages.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Install Dependencies (with retry & timeout)
         run: |
+          # Write package list to a file for caching key
+          echo "python3-pip ffmpeg zip p7zip-full curl jq bc unzip" > apt-packages.txt
+
+          # Retry function with exponential backoff
+          retry() {
+            local n=1
+            local max=3
+            local delay=10
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "⚠️  Command failed. Attempt $n/$max: retrying in ${delay}s..."
+                  sleep $delay
+                  delay=$((delay * 2))
+                else
+                  echo "❌ Command failed after $max attempts."
+                  return 1
+                fi
+              }
+            done
+          }
+
           echo "──────────────────────────────────────────"
           echo " 📦  SETUP  ·  Installing dependencies"
           echo "──────────────────────────────────────────"
 
-          # Apt with retries and minimal packages
-          sudo apt-get update -o Acquire::Retries=3 --fix-missing
-          sudo apt-get install -y --no-install-recommends \
+          # Update with retries
+          retry sudo apt-get update -o Acquire::Retries=5 --fix-missing
+
+          # Install with retries, no recommends, noninteractive
+          export DEBIAN_FRONTEND=noninteractive
+          retry sudo apt-get install -y --no-install-recommends \
             python3-pip ffmpeg zip p7zip-full curl jq bc unzip
 
-          # Install Deno directly (faster and more reliable)
+          # Install Deno directly (fast, no interactive script)
+          echo "▶️  Installing Deno..."
           curl -fsSL -o deno.zip https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip
           unzip -o deno.zip -d $HOME/.deno
           rm deno.zip
@@ -121,11 +160,15 @@ jobs:
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
           deno --version
 
-          # Install yt-dlp with retries and no cache
-          pip3 install --no-cache-dir --retries 5 --upgrade yt-dlp
+          # Install yt-dlp with retries and extended timeout
+          echo "▶️  Installing yt-dlp..."
+          retry pip3 install --no-cache-dir --default-timeout=100 --retries=5 --upgrade yt-dlp
 
-          echo "✅ Dependencies ready."
+          echo "✅ All dependencies installed successfully."
 
+      # ------------------------------------------------------------
+      #  REST OF THE WORKFLOW (unchanged, uses method 3 only)
+      # ------------------------------------------------------------
       - name: Download Setup (functions & config)
         env:
           YT_URLS: ${{ github.event.inputs.youtube_urls }}

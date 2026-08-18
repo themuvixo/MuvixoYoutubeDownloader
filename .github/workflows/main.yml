@@ -98,7 +98,6 @@ jobs:
           fi
 
       - name: Install Dependencies
-        id: deps
         run: |
           echo "──────────────────────────────────────────"
           echo " 📦  SETUP  ·  Installing dependencies"
@@ -106,12 +105,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq python3-pip ffmpeg zip p7zip-full curl jq bc unzip
           
-          # Install Deno (JS runtime required by yt-dlp for YouTube challenges)
+          # Install Deno — MUST be in PATH for yt-dlp to find it
           curl -fsSL https://deno.land/install.sh | sh
           export DENO_INSTALL="$HOME/.deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "DENO_INSTALL=$DENO_INSTALL" >> $GITHUB_ENV
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
+          
+          # Verify deno is accessible
           deno --version
           
           pip3 install --upgrade -q yt-dlp
@@ -123,9 +124,9 @@ jobs:
           YT_URLS: ${{ github.event.inputs.youtube_urls }}
           YT_QUALITY: ${{ github.event.inputs.quality }}
           YT_PASSWORD: ${{ github.event.inputs.password }}
-          DENO_INSTALL: ${{ env.DENO_INSTALL }}
         run: |
-          export PATH="$DENO_INSTALL/bin:$PATH"
+          # Ensure deno is in PATH for this step too
+          export PATH="$HOME/.deno/bin:$PATH"
           
           # ── Parse all URLs ────────────────────────────────────────────────
           URLS_RAW="${YT_URLS}"
@@ -232,11 +233,11 @@ jobs:
             echo "🎧 Target: $SPOTIFY_TITLE — ${SPOTIFY_AUTHOR:-unknown}"
             SEARCH_Q="${SPOTIFY_TITLE}${SPOTIFY_AUTHOR:+ ${SPOTIFY_AUTHOR}}"
             
-            # Search YouTube using Deno
+            # Search YouTube using Deno (use "deno" string, not path)
             yt-dlp \
               --proxy "socks5://127.0.0.1:1080" \
               --extractor-args "youtube:player_client=web" \
-              --js-runtimes "$DENO_INSTALL/bin/deno" \
+              --js-runtimes deno \
               --remote-components ejs:github \
               --skip-download --no-warnings --no-check-certificates \
               --print "%(id)s|||%(title)s|||%(channel)s" \
@@ -324,10 +325,9 @@ jobs:
           fi
 
       - name: Download YouTube Video(s)
-        env:
-          DENO_INSTALL: ${{ env.DENO_INSTALL }}
         run: |
-          export PATH="$DENO_INSTALL/bin:$PATH"
+          # Deno must be in PATH
+          export PATH="$HOME/.deno/bin:$PATH"
           
           FORMAT=$(cat /tmp/yt_format.txt)
           QUALITY=$(cat /tmp/yt_quality.txt)
@@ -370,8 +370,7 @@ jobs:
               COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 10 --fragment-retries 10 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
             
-            DENO_CMD="$DENO_INSTALL/bin/deno"
-            
+            # CRITICAL: Use "deno" string, NOT full path. yt-dlp expects these exact values.
             case $METHOD in
               1)
                 yt-dlp \
@@ -379,7 +378,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=web" \
-                  --js-runtimes "$DENO_CMD" \
+                  --js-runtimes deno \
                   --remote-components ejs:github \
                   --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                   --add-header "Accept-Language:en-US,en;q=0.9" \
@@ -391,7 +390,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=web" \
-                  --js-runtimes "$DENO_CMD" \
+                  --js-runtimes deno \
                   --remote-components ejs:npm \
                   --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                   --add-header "Accept-Language:en-US,en;q=0.9" \
@@ -403,7 +402,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=web,mweb,android_vr" \
-                  --js-runtimes "$DENO_CMD" \
+                  --js-runtimes deno \
                   --remote-components ejs:github \
                   "$URL"
                 ;;
@@ -428,7 +427,7 @@ jobs:
                   --format "$FORMAT" \
                   $COMMON_FLAGS \
                   --extractor-args "youtube:player_client=web" \
-                  --js-runtimes "$DENO_CMD" \
+                  --js-runtimes deno \
                   --remote-components ejs:github \
                   "$URL"
                 ;;
@@ -465,7 +464,7 @@ jobs:
             mkdir -p "$TMP_DIR"
             
             echo "🔎 Checking available formats..."
-            FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes "$DENO_INSTALL/bin/deno" --remote-components ejs:github "$URL" 2>&1 || true)
+            FORMAT_LISTING=$(yt-dlp -F --proxy "socks5://127.0.0.1:1080" --js-runtimes deno --remote-components ejs:github "$URL" 2>&1 || true)
             
             if echo "$FORMAT_LISTING" | grep -qiE "members[ -]?only|subscriber[ -]?only|available to this channel'?s members|join this channel|LOGIN_REQUIRED"; then
               echo ""
@@ -624,11 +623,9 @@ jobs:
 
       - name: Download Subtitles
         if: ${{ github.event.inputs.download_subtitles == 'true' }}
-        env:
-          DENO_INSTALL: ${{ env.DENO_INSTALL }}
         run: |
           set +e
-          export PATH="$DENO_INSTALL/bin:$PATH"
+          export PATH="$HOME/.deno/bin:$PATH"
           
           OUTPUT_DIR=$(cat /tmp/output_dir_path.txt)
           mapfile -t URL_LIST < /tmp/yt_urls.txt
@@ -660,7 +657,6 @@ jobs:
             
             SFLAGS=$(sub_flags)
             COMMON_SUB="--sub-format vtt/srt/best --convert-subs vtt --skip-download --no-playlist --no-check-certificates --output ${OUT}"
-            DENO_CMD="$DENO_INSTALL/bin/deno"
             
             for METHOD in 1 2 3 4 5 6 7 8; do
               echo "   ▸ subtitle method $METHOD ..."
@@ -669,7 +665,7 @@ jobs:
                   yt-dlp \
                     --proxy "socks5://127.0.0.1:1080" \
                     --extractor-args "youtube:player_client=web" \
-                    --js-runtimes "$DENO_CMD" \
+                    --js-runtimes deno \
                     --remote-components ejs:github \
                     --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                     --add-header "Accept-Language:en-US,en;q=0.9" \
@@ -679,7 +675,7 @@ jobs:
                   yt-dlp \
                     --proxy "socks5://127.0.0.1:1080" \
                     --extractor-args "youtube:player_client=web" \
-                    --js-runtimes "$DENO_CMD" \
+                    --js-runtimes deno \
                     --remote-components ejs:npm \
                     --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                     --add-header "Accept-Language:en-US,en;q=0.9" \
@@ -689,7 +685,7 @@ jobs:
                   yt-dlp \
                     --proxy "socks5://127.0.0.1:1080" \
                     --extractor-args "youtube:player_client=web,mweb,android_vr" \
-                    --js-runtimes "$DENO_CMD" \
+                    --js-runtimes deno \
                     --remote-components ejs:github \
                     $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
                   ;;
@@ -708,7 +704,7 @@ jobs:
                 6)
                   yt-dlp \
                     --extractor-args "youtube:player_client=web" \
-                    --js-runtimes "$DENO_CMD" \
+                    --js-runtimes deno \
                     --remote-components ejs:github \
                     $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
                   ;;

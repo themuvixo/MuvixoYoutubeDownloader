@@ -1,4 +1,3 @@
-
 name: 📁Youtube Downloader
 on:
   workflow_dispatch:
@@ -34,7 +33,6 @@ on:
         default: ''
         type: string
 
-# Concurrency control to prevent multiple runs
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -46,7 +44,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,15 +106,24 @@ jobs:
           echo "──────────────────────────────────────────"
           echo " 📦  SETUP  ·  Installing dependencies"
           echo "──────────────────────────────────────────"
-          sudo apt-get update
-          sudo apt-get install -y python3-pip ffmpeg zip p7zip-full curl jq bc unzip
-          # Install Deno (JS runtime required by yt-dlp for YouTube n-challenge solving)
-          curl -fsSL https://deno.land/install.sh | sh
+
+          # Apt with retries and minimal packages
+          sudo apt-get update -o Acquire::Retries=3 --fix-missing
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip ffmpeg zip p7zip-full curl jq bc unzip
+
+          # Install Deno directly (faster and more reliable)
+          curl -fsSL -o deno.zip https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip
+          unzip -o deno.zip -d $HOME/.deno
+          rm deno.zip
           export DENO_INSTALL="$HOME/.deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
           deno --version
-          pip3 install --upgrade yt-dlp
+
+          # Install yt-dlp with retries and no cache
+          pip3 install --no-cache-dir --retries 5 --upgrade yt-dlp
+
           echo "✅ Dependencies ready."
 
       - name: Download Setup (functions & config)
@@ -132,12 +139,10 @@ jobs:
           QUALITY="${YT_QUALITY}"
           ZIP_PASSWORD="${YT_PASSWORD}"
           DOWNLOAD_SUBS="${{ github.event.inputs.download_subtitles }}"
-
           # Output directory for finished files — this whole folder becomes the artifact
           OUTPUT_DIR="/tmp/output"
           mkdir -p "$OUTPUT_DIR"
           echo "$OUTPUT_DIR" > /tmp/output_dir_path.txt
-
           > /tmp/video_info.txt
 
           echo "╔══════════════════════════════════════════════════════════╗"
@@ -197,7 +202,6 @@ jobs:
               FORMAT="bestvideo+bestaudio/best"
               ;;
           esac
-
           echo "$FORMAT" > /tmp/yt_format.txt
           echo "$QUALITY" > /tmp/yt_quality.txt
           echo "$ZIP_PASSWORD" > /tmp/yt_password.txt
@@ -205,7 +209,6 @@ jobs:
           # ── Resolve Spotify URLs → verified YouTube video ────────────────
           RESOLVED_URLS=()
           HAS_SPOTIFY=false
-
           resolve_spotify() {
             local URL="$1"
             echo "🎧 Spotify URL detected: $URL"
@@ -228,7 +231,6 @@ jobs:
               fi
             fi
             echo "🎧 Target: $SPOTIFY_TITLE — ${SPOTIFY_AUTHOR:-unknown}"
-
             SEARCH_Q="${SPOTIFY_TITLE}${SPOTIFY_AUTHOR:+ ${SPOTIFY_AUTHOR}}"
             yt-dlp \
               --proxy "socks5://127.0.0.1:1080" \
@@ -239,19 +241,15 @@ jobs:
               --print "%(id)s|||%(title)s|||%(channel)s" \
               "ytsearch10:${SEARCH_Q}" \
               2>/dev/null > /tmp/spotify_candidates.txt || true
-
             export SPOTIFY_TITLE SPOTIFY_AUTHOR
             CHOSEN_VIDEO=$(python3 <<'PY' 2>/dev/null || true
           import os, re
-
           def norm(s):
               s = (s or '').lower()
               s = re.sub(r'[^\w؀-ۿݐ-ݿﹰ-﻿ ]', ' ', s)
               return re.sub(r'\s+', ' ', s).strip()
-
           author = norm(os.environ.get('SPOTIFY_AUTHOR', ''))
           au = {w for w in author.split() if w}
-
           cands = []
           try:
               with open('/tmp/spotify_candidates.txt', encoding='utf-8', errors='replace') as f:
@@ -267,36 +265,28 @@ jobs:
                           cands.append((vid, t, ch))
           except OSError:
               pass
-
           MOVIE = re.compile(r'(full\s*movie|فیلم|filme\s*farsi|film\s*farsi|filmnama|movie\s*\d|دانلود\s*فیلم)', re.I)
           def is_movie(t, ch):
               return bool(MOVIE.search(t)) or bool(MOVIE.search(ch))
-
           def is_topic(ch):
               return ' topic' in ch or ch.endswith('topic') or '- topic' in ch
-
           visible = [(vid, t, ch) for vid, t, ch in cands if not is_movie(t, ch)]
-
           def close(a, b):
               if not a or not b:
                   return False
               return a == b or a in b or b in a
-
           def author_in_channel(ch):
               return bool(au) and all(w in ch for w in au)
-
           def pick(pred):
               for vid, t, ch in visible:
                   if pred(ch, t):
                       print(f"https://www.youtube.com/watch?v={vid}")
                       raise SystemExit(0)
-
           pick(lambda ch, t: is_topic(ch) and (close(ch, author) or author_in_channel(ch)))
           pick(lambda ch, t: close(ch, author))
           pick(lambda ch, t: author_in_channel(ch))
           pick(lambda ch, t: close(t, author))
           pick(lambda ch, t: is_topic(ch))
-
           for vid, t, ch in visible:
               print(f"https://www.youtube.com/watch?v={vid}")
               raise SystemExit(0)
@@ -330,9 +320,7 @@ jobs:
             echo "$QUALITY" > /tmp/yt_quality.txt
             echo "🎧 Spotify mode active — quality forced to audio (MP3)."
           fi
-
           printf "%s\n" "${RESOLVED_URLS[@]}" > /tmp/yt_urls.txt
-
           if [ "${#RESOLVED_URLS[@]}" -eq 0 ]; then
             echo "❌ No valid URLs to download."
             exit 1
@@ -350,10 +338,12 @@ jobs:
           sanitize_name() {
             echo "$1" | sed 's/ /-/g' | sed 's/　/-/g' | tr -s '-'
           }
+
           get_random_word() {
             RANDOM_WORDS=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "theta" "kappa" "lambda" "sigma" "omega" "nova" "star" "moon" "sun" "sky" "cloud" "river" "ocean" "mountain")
             echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}_$RANDOM"
           }
+
           get_unique_folder() {
             local BASE_PATH="$1"
             local NAME="$2"
@@ -367,94 +357,26 @@ jobs:
             echo "${NAME}_${RANDOM_SUFFIX}"
           }
 
-          download_video() {
-            local METHOD=$1
-            local URL=$2
-            local TMP_DIR=$3
-            echo "   ▸ trying method $METHOD..."
+          # ── ONLY METHOD 3 ──────────────────────────────────────────────────
+          download_video_method3() {
+            local URL=$1
+            local TMP_DIR=$2
+            echo "   ▸ using method 3 (web, mweb, android_vr with deno + github)..."
+
             if [ "$QUALITY" = "audio" ]; then
               COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             else
-              # FIXED: Better merging approach - preserve quality
               COMMON_FLAGS="--merge-output-format mp4 --remux-video mp4 --write-thumbnail --convert-thumbnails jpg --no-cache-dir --output ${TMP_DIR}/%(title)s.%(ext)s --no-part --no-playlist --retries 5 --fragment-retries 5 --no-check-certificates --concurrent-fragments 8 --buffer-size 16K --http-chunk-size 10M --progress --newline"
             fi
-            case $METHOD in
-              1)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=web" \
-                  --js-runtimes deno \
-                  --remote-components ejs:github \
-                  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-                  --add-header "Accept-Language:en-US,en;q=0.9" \
-                  "$URL"
-                ;;
-              2)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=web" \
-                  --js-runtimes deno \
-                  --remote-components ejs:npm \
-                  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-                  --add-header "Accept-Language:en-US,en;q=0.9" \
-                  "$URL"
-                ;;
-              3)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=web,mweb,android_vr" \
-                  --js-runtimes deno \
-                  --remote-components ejs:github \
-                  "$URL"
-                ;;
-              4)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=mweb" \
-                  "$URL"
-                ;;
-              5)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=android_vr" \
-                  "$URL"
-                ;;
-              6)
-                yt-dlp \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=web" \
-                  --js-runtimes deno \
-                  --remote-components ejs:github \
-                  "$URL"
-                ;;
-              7)
-                yt-dlp \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=mweb" \
-                  "$URL"
-                ;;
-              8)
-                yt-dlp \
-                  --proxy "socks5://127.0.0.1:1080" \
-                  --format "$FORMAT" \
-                  $COMMON_FLAGS \
-                  --extractor-args "youtube:player_client=android" \
-                  --user-agent "Mozilla/5.0 (Linux; Android 12; SM-S906N Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36" \
-                  "$URL"
-                ;;
-            esac
+
+            yt-dlp \
+              --proxy "socks5://127.0.0.1:1080" \
+              --format "$FORMAT" \
+              $COMMON_FLAGS \
+              --extractor-args "youtube:player_client=web,mweb,android_vr" \
+              --js-runtimes deno \
+              --remote-components ejs:github \
+              "$URL"
           }
 
           URL_INDEX=0
@@ -466,6 +388,7 @@ jobs:
             echo "╚══════════════════════════════════════════════════════════╝"
             echo "  🔗 $URL"
             echo ""
+
             TMP_DIR="tmp_downloads_${URL_INDEX}"
             mkdir -p "$TMP_DIR"
 
@@ -484,54 +407,52 @@ jobs:
               rm -rf "$TMP_DIR"
               continue
             fi
+
             echo "$FORMAT_LISTING"
             echo ""
 
+            # Only method 3
             DOWNLOAD_SUCCESS=false
-            for METHOD in 1 2 3 4 5 6 7 8; do
-              if download_video $METHOD "$URL" "$TMP_DIR"; then
-                echo "   ✅ download successful with method $METHOD!"
-
-                QUALITY_OK=true
-                if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
-                  for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
-                    [ -f "$DOWNLOADED_FILE" ] || continue
-                    ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
-                    echo "   🎯 requested ${QUALITY}p → actual ${ACTUAL_HEIGHT}px"
-                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -lt $(( QUALITY - 50 )) ] 2>/dev/null; then
-                      echo "   ⚠️  method $METHOD delivered ${ACTUAL_HEIGHT}p instead of ${QUALITY}p — rejecting, trying next method..."
-                      QUALITY_OK=false
-                      rm -f "$DOWNLOADED_FILE"
-                    else
-                      echo "   ✅ quality check passed."
-                    fi
-                  done
-                elif [ "$QUALITY" = "best" ]; then
-                  for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
-                    [ -f "$DOWNLOADED_FILE" ] || continue
-                    ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
-                    echo "   🎯 best quality → actual ${ACTUAL_HEIGHT}px"
-                    if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -le 360 ] 2>/dev/null && [ $METHOD -lt 8 ]; then
-                      echo "   ⚠️  method $METHOD only got ${ACTUAL_HEIGHT}p for 'best' — likely JS challenge failure, trying next method..."
-                      QUALITY_OK=false
-                      rm -f "$DOWNLOADED_FILE"
-                    fi
-                  done
-                fi
-
-                if [ "$QUALITY_OK" = true ]; then
-                  DOWNLOAD_SUCCESS=true
-                  break
-                fi
-              else
-                echo "   ❌ method $METHOD failed, waiting 3s before next attempt..."
-                sleep 3
+            if download_video_method3 "$URL" "$TMP_DIR"; then
+              echo "   ✅ download successful with method 3!"
+              QUALITY_OK=true
+              if [ "$QUALITY" != "best" ] && [ "$QUALITY" != "audio" ]; then
+                for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
+                  [ -f "$DOWNLOADED_FILE" ] || continue
+                  ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
+                  echo "   🎯 requested ${QUALITY}p → actual ${ACTUAL_HEIGHT}px"
+                  if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -lt $(( QUALITY - 50 )) ] 2>/dev/null; then
+                    echo "   ⚠️  method 3 delivered ${ACTUAL_HEIGHT}p instead of ${QUALITY}p — rejecting."
+                    QUALITY_OK=false
+                    rm -f "$DOWNLOADED_FILE"
+                  else
+                    echo "   ✅ quality check passed."
+                  fi
+                done
+              elif [ "$QUALITY" = "best" ]; then
+                for DOWNLOADED_FILE in "$TMP_DIR"/*.mp4 "$TMP_DIR"/*.webm "$TMP_DIR"/*.mkv; do
+                  [ -f "$DOWNLOADED_FILE" ] || continue
+                  ACTUAL_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$DOWNLOADED_FILE" 2>/dev/null || echo "unknown")
+                  echo "   🎯 best quality → actual ${ACTUAL_HEIGHT}px"
+                  if [ "$ACTUAL_HEIGHT" != "unknown" ] && [ "$ACTUAL_HEIGHT" -le 360 ] 2>/dev/null; then
+                    echo "   ⚠️  method 3 only got ${ACTUAL_HEIGHT}p for 'best' — probably JS challenge failure, skipping."
+                    QUALITY_OK=false
+                    rm -f "$DOWNLOADED_FILE"
+                  fi
+                done
               fi
-            done
+              if [ "$QUALITY_OK" = true ]; then
+                DOWNLOAD_SUCCESS=true
+              else
+                echo "   ❌ quality check failed, skipping this video."
+              fi
+            else
+              echo "   ❌ method 3 failed."
+            fi
 
             if [ "$DOWNLOAD_SUCCESS" = false ]; then
               echo ""
-              echo "  ❌ All download methods failed for this URL — skipping."
+              echo "  ❌ Download failed — skipping this URL."
               rm -rf "$TMP_DIR"
               continue
             fi
@@ -547,14 +468,12 @@ jobs:
               if [[ "$FILE" == *.jpg ]] || [[ "$FILE" == *.webp ]]; then
                 continue
               fi
-
               SIZE=$(stat -c%s "$FILE")
               BASENAME=$(basename "$FILE")
               FILENAME_NO_EXT="${BASENAME%.*}"
               EXT="${BASENAME##*.}"
               FILENAME_NO_EXT=$(sanitize_name "$FILENAME_NO_EXT")
               SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-
               echo ""
               echo "  ──────────────────────────────────────────"
               echo "  📦 Packaging: $BASENAME (${SIZE_MB} MB)"
@@ -631,7 +550,6 @@ jobs:
           set +e
           OUTPUT_DIR=$(cat /tmp/output_dir_path.txt)
           mapfile -t URL_LIST < /tmp/yt_urls.txt
-
           echo "╔══════════════════════════════════════════════════════════╗"
           echo "║  📝  SUBTITLES                                              "
           echo "╚══════════════════════════════════════════════════════════╝"
@@ -642,7 +560,6 @@ jobs:
             local SURL="$3"
             local SUB_DIR
             SUB_DIR=$(dirname "$OUT")
-
             sub_count() { find "$SUB_DIR" -type f \( -name "*.vtt" -o -name "*.srt" \) 2>/dev/null | wc -l; }
             fa_count()  { find "$SUB_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l; }
             en_count()  { find "$SUB_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l; }
@@ -656,123 +573,61 @@ jobs:
                 auto-both)  echo "--write-auto-sub --sub-langs en,fa" ;;
               esac
             }
+
             SFLAGS=$(sub_flags)
             COMMON_SUB="--sub-format vtt/srt/best --convert-subs vtt --skip-download --no-playlist --no-check-certificates --output ${OUT}"
 
-            for METHOD in 1 2 3 4 5 6 7 8; do
-              echo "   ▸ subtitle method $METHOD ..."
-              case $METHOD in
-                1)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=web" \
-                    --js-runtimes deno \
-                    --remote-components ejs:github \
-                    --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-                    --add-header "Accept-Language:en-US,en;q=0.9" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                    ;;
-                2)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=web" \
-                    --js-runtimes deno \
-                    --remote-components ejs:npm \
-                    --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-                    --add-header "Accept-Language:en-US,en;q=0.9" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                3)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=web,mweb,android_vr" \
-                    --js-runtimes deno \
-                    --remote-components ejs:github \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                4)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=mweb" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                5)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=android_vr" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                6)
-                  yt-dlp \
-                    --extractor-args "youtube:player_client=web" \
-                    --js-runtimes deno \
-                    --remote-components ejs:github \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                7)
-                  yt-dlp \
-                    --extractor-args "youtube:player_client=mweb" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-                8)
-                  yt-dlp \
-                    --proxy "socks5://127.0.0.1:1080" \
-                    --extractor-args "youtube:player_client=android" \
-                    --user-agent "Mozilla/5.0 (Linux; Android 12; SM-S906N Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36" \
-                    $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
-                  ;;
-              esac
+            # Only method 3 for subtitles as well (to stay consistent)
+            echo "   ▸ subtitle method 3 ..."
+            yt-dlp \
+              --proxy "socks5://127.0.0.1:1080" \
+              --extractor-args "youtube:player_client=web,mweb,android_vr" \
+              --js-runtimes deno \
+              --remote-components ejs:github \
+              $SFLAGS $COMMON_SUB "$SURL" 2>&1 || true
 
-              if [ "$MODE" = "fa-native" ] || [ "$MODE" = "fa-auto" ]; then
-                [ "$(fa_count)" -gt 0 ] && { echo "   ✅ success with method $METHOD"; return 0; }
-              elif [ "$MODE" = "en-auto" ]; then
-                [ "$(en_count)" -gt 0 ] && { echo "   ✅ success with method $METHOD"; return 0; }
-              elif [ "$MODE" = "auto-both" ]; then
-                local EN_GOT=$(en_count)
-                local FA_GOT=$(fa_count)
-                if [ "$EN_GOT" -gt 0 ] && [ "$FA_GOT" -gt 0 ]; then
-                  echo "   ✅ success with method $METHOD (both en+fa)"
-                  return 0
-                elif [ "$EN_GOT" -gt 0 ] || [ "$FA_GOT" -gt 0 ]; then
-                  echo "   ⚠️  partial success (en:$EN_GOT, fa:$FA_GOT), trying next method..."
-                fi
-              else
-                [ "$(sub_count)" -gt 0 ] && { echo "   ✅ success with method $METHOD"; return 0; }
+            if [ "$MODE" = "fa-native" ] || [ "$MODE" = "fa-auto" ]; then
+              [ "$(fa_count)" -gt 0 ] && { echo "   ✅ success"; return 0; }
+            elif [ "$MODE" = "en-auto" ]; then
+              [ "$(en_count)" -gt 0 ] && { echo "   ✅ success"; return 0; }
+            elif [ "$MODE" = "auto-both" ]; then
+              local EN_GOT=$(en_count)
+              local FA_GOT=$(fa_count)
+              if [ "$EN_GOT" -gt 0 ] && [ "$FA_GOT" -gt 0 ]; then
+                echo "   ✅ success (both en+fa)"
+                return 0
+              elif [ "$EN_GOT" -gt 0 ] || [ "$FA_GOT" -gt 0 ]; then
+                echo "   ⚠️  partial success (en:$EN_GOT, fa:$FA_GOT)"
+                return 1
               fi
-              sleep 1
-            done
-            echo "   ⚠️  all 8 methods failed for mode: $MODE"
+            else
+              [ "$(sub_count)" -gt 0 ] && { echo "   ✅ success"; return 0; }
+            fi
+            echo "   ⚠️  no subtitles downloaded."
             return 1
           }
 
           while IFS='|' read -r ORIGINAL_NAME FOLDER_NAME VIDEO_URL VIDEO_SIZE HAS_THUMB; do
             [ -z "$FOLDER_NAME" ] && continue
-
             SUBTITLE_DIR="$OUTPUT_DIR/${FOLDER_NAME}/subtitle"
             mkdir -p "$SUBTITLE_DIR"
             OUT_TMPL="${SUBTITLE_DIR}/%(title)s"
-
             echo ""
             echo "  ──────────────────────────────────────────"
             echo "  📝 Subtitles for: $FOLDER_NAME"
             echo "  ──────────────────────────────────────────"
-
             echo "  → fetching original subtitles (en, fa, and others)..."
             sub_download "all" "$OUT_TMPL" "$VIDEO_URL" || true
-
             EN_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l)
             FA_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l)
-
             [ "$EN_COUNT" -gt 0 ] && echo "  ✅ English subtitle present (native)." || echo "  ⚠️  no native English subtitle."
             [ "$FA_COUNT" -gt 0 ] && echo "  ✅ Persian subtitle present (native)." || echo "  ⚠️  no native Persian subtitle."
-
             if [ "$EN_COUNT" -eq 0 ] || [ "$FA_COUNT" -eq 0 ]; then
               echo "  → downloading auto-generated subtitles (en, fa)..."
               sub_download "auto-both" "$OUT_TMPL" "$VIDEO_URL" || true
               EN_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.en.vtt" -o -name "*.en.srt" \) 2>/dev/null | wc -l)
               FA_COUNT=$(find "$SUBTITLE_DIR" -type f \( -name "*.fa.vtt" -o -name "*.fa.srt" \) 2>/dev/null | wc -l)
             fi
-
             SUB_COUNT=$(find "$SUBTITLE_DIR" -type f 2>/dev/null | wc -l)
             if [ "$SUB_COUNT" -eq 0 ]; then
               echo "  (no subtitles available for this video)"
@@ -789,7 +644,6 @@ jobs:
               fi
             fi
           done < /tmp/video_info.txt
-
           echo ""
           echo "✅ Subtitle phase complete (failures handled gracefully)."
 
@@ -838,7 +692,7 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
           DIRECT_API_URL="${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/${{ steps.artifact_info.outputs.artifact_id }}/zip"
-          
+
           echo ""
           echo "╔══════════════════════════════════════════════════════════╗"
           echo "║                    ✅  A L L   D O N E                     ║"
